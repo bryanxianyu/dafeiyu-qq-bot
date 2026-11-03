@@ -1,0 +1,86 @@
+# 🐟 养大肥鱼
+
+让 DeepSeek 住进你的 QQ：一条有人格、有记忆、会斗图、会自己冒泡的 AI 群友。
+
+基于 [DeepSeek Harness（DSH）](https://www.npmjs.com/package/@deepseek-ai/dsh) + [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot v11），Windows 上一个安装包装好：自带 Node 运行时和 QQ 组件，扫码登录就能用，所有设置都在本机网页控制台里点。
+
+## 它能做什么
+
+- **像群友一样聊天**：潜水看群，有梗就接；被 @ 一定回；刚聊完时大家接着说的话都会看。回复按字数“打字”、分几条发，不秒回、不乱引用。
+- **主动冒泡**：群里安静一阵子后自己说点什么——接之前的话题、吐槽、问问熟人、发个表情包。只在白天，次数有上限，可调可关。
+- **人格卡**：身份、性格、说话风格、底线、示例对话，常驻系统提示不漂移。自带温和的「大肥鱼」和毒舌的「贴吧老哥」两套，每个群/私聊可以用不同人格，网页一键切换或 QQ 里发 `/切换人格`。
+- **长期记忆**：自动从聊天里整理要紧事，按艾宾浩斯遗忘曲线慢慢淡忘，被想起就记得更牢；核心事实经主人确认后永久记住。
+- **表情包**：偷群里的表情包，用 deepseek-v4-flash 看图打标签；聊天时按情绪挑图；库里没有合适的就上网搜（必应安全搜索 + 看图把关）。
+- **QQ 空间**：每天到点写一条“鱼的日记”，默认先私聊给主人确认再发。
+- **防注入**：群友发来的东西一律当聊天内容；群聊里不能跑命令、碰文件；伪造“系统提示/主人”无效；记忆不收指令性内容。权限由程序强制，不靠模型自觉。
+- **网页控制台**：运行状态、今日统计、扫码登录、人格编辑、记忆曲线、表情库审核、安全权限，全部可视化。
+
+## 快速开始
+
+### 用户：从源码打包
+
+需要 Windows 10/11、[PowerShell 7](https://github.com/PowerShell/PowerShell)、[Node.js](https://nodejs.org/) 22.19+ 或 24+。
+
+```powershell
+git clone https://github.com/kylian-08/dafeiyu-qq-bot.git
+cd dafeiyu-qq-bot
+pwsh ./pack.ps1
+```
+
+会自动下载 DSH 和 NapCat 一键包，生成 `dist\大肥鱼-Setup-vX.exe`（安装程序）和便携版 zip。双击安装程序，装好后：
+
+1. 浏览器会打开控制台，在「账号与连接」填 [DeepSeek API Key](https://platform.deepseek.com/api_keys)、你的 QQ 号（主人）、允许它说话的群号、机器人 QQ 号。
+2. 首次启动会下载 QQ 组件（约 200MB），然后弹出扫码窗口：用**机器人 QQ（建议小号）**的手机 QQ 扫码。
+3. 首页显示「大肥鱼在线」就可以在群里 @ 它了。
+
+### QQ 里的命令
+
+| 命令 | 说明 |
+|---|---|
+| `/人格` | 看当前人格和可选人格（主人） |
+| `/切换人格`、`/人格 名字` | 切换这个群/私聊的人格（主人） |
+| `/重置` | 换一缸新水：开始新对话，要紧的事已整理进长期记忆（群里只有主人能用） |
+| `/状态` | 在线状态、模型、会话 |
+
+主人私聊里还可以让它发说说，回「发」/「不发」确认草稿。
+
+## ⚠️ 使用须知
+
+- **QQ 账号风险**：NapCat 是非官方 QQ 协议实现，机器人号有被腾讯风控、限制甚至封号的可能。请用小号，不要用主号。
+- **QQ 空间**：用的是网页版非官方接口，可能随腾讯改版失效；机器人号频繁自动发帖有风控风险，默认关闭。
+- **费用**：模型调用按 DeepSeek 计费。主动冒泡、看图打标签、上网找表情都会额外调用模型，控制台里都有用量上限。
+- **内容责任**：人格卡（尤其是攻击性人格）由你自己编写和启用，请遵守群规和法律法规，别拿它去骚扰别人。
+- **主人私聊的完整权限**：默认主人私聊可以让它在工作目录里读写文件、执行命令（DSH 沙箱，高危操作自动拒绝）。不需要的话在「安全」页调成「只聊天」。
+
+## 项目结构
+
+```
+plugin/          DSH 插件 dsh-fish：QQ 桥、群聊行为、安全层、表情/空间动作
+release/app/     控制台：网页 GUI、进程管理、人格卡与长期记忆、表情包库
+build/           托盘启动器、安装程序（C#，用 Windows 自带编译器）、DSH 精简脚本
+pack.ps1         一键打包
+test/            单元测试、端到端测试、假 QQ
+docs/            开发说明（架构、心智设计、安全设计、测试）
+```
+
+技术细节见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+
+## 测试
+
+```powershell
+node test/mind-unit.mjs        # 记忆系统
+node test/security-unit.mjs    # 安全层：工具守卫、内网地址、转义、记忆投毒
+node test/fun-unit.mjs         # 表情包库 + QQ 空间
+```
+
+端到端测试（真模型 + 假 QQ，不碰正在运行的实例）见开发说明。
+
+## 致谢
+
+- [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)：Agent 运行时
+- [NapCatQQ](https://github.com/NapNeko/NapCatQQ)：OneBot v11 QQ 协议实现
+- 表情包和 QQ 空间的思路参考了 [astrbot_plugin_meme_manager](https://github.com/anka-afk/astrbot_plugin_meme_manager)、[MaiBot](https://github.com/MaiM-with-u/MaiBot)、[astrbot_plugin_qzone_ultra](https://github.com/diaomin66/astrbot_plugin_qzone_ultra)
+
+## 许可证
+
+[MIT](LICENSE)。打包产物里内置的 DSH、NapCat、Node.js 各自遵循其原有许可证。

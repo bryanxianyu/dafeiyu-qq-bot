@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🐟 大肥鱼</title>
+<link rel="stylesheet" href="/style.css">
+<script>window.FISH_TOKEN = "__TOKEN__";</script>
+</head>
+<body>
+<aside>
+  <div class="brand"><span class="logo">🐟</span><div>大肥鱼<small id="ver"></small></div></div>
+  <nav>
+    <a data-tab="status" class="active"><i>🏠</i>首页</a>
+    <div class="nav-group">它是谁</div>
+    <a data-tab="persona"><i>🎭</i>人格</a>
+    <a data-tab="memory"><i>🧠</i>记忆<span id="pendingBadge" class="badge"></span></a>
+    <div class="nav-group">它会做什么</div>
+    <a data-tab="group"><i>💬</i>聊天方式</a>
+    <a data-tab="stickers"><i>😂</i>表情包<span id="stickerBadge" class="badge"></span></a>
+    <a data-tab="qzone"><i>✨</i>QQ 空间</a>
+    <div class="nav-group">设置</div>
+    <a data-tab="basic"><i>🔑</i>账号与连接</a>
+    <a data-tab="safety"><i>🛡️</i>安全</a>
+    <a data-tab="logs"><i>📜</i>日志</a>
+    <a data-tab="ext" class="dev"><i>🧩</i>扩展<small>开发者</small><span id="extCount" class="badge"></span></a>
+  </nav>
+  <div class="foot">关掉网页不影响运行<br>退出：右键托盘里的小鱼</div>
+</aside>
+
+<main>
+  <div id="banner" class="banner hidden"></div>
+
+  <!-- 首页 -->
+  <section id="tab-status" class="tab active">
+    <div class="hero" id="hero">
+      <div class="hero-dot" id="heroDot"></div>
+      <div class="grow">
+        <div class="hero-title" id="heroTitle">正在读取状态……</div>
+        <div class="hero-sub" id="heroSub"></div>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="setupPanel">
+      <h2>开始养鱼，还差这几步</h2>
+      <ol class="steps" id="setupSteps"></ol>
+    </div>
+
+    <div class="tiles" id="todayTiles"></div>
+
+    <div class="grid">
+      <div class="panel service">
+        <div class="row between"><h2>📱 QQ 登录</h2><span id="napPill" class="pill"></span></div>
+        <div id="napBody" class="grow"></div>
+        <div class="row gap">
+          <button id="napStart">启动</button>
+          <button id="napRestart" class="ghost">重启</button>
+          <button id="napStop" class="ghost danger">停止</button>
+        </div>
+      </div>
+      <div class="panel service">
+        <div class="row between"><h2>🐟 大肥鱼（AI）</h2><span id="fishPill" class="pill"></span></div>
+        <div id="fishBody" class="grow"></div>
+        <div class="row gap">
+          <button id="fishStart">启动</button>
+          <button id="fishRestart" class="ghost">重启</button>
+          <button id="fishStop" class="ghost danger">停止</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row between"><h2>🎭 现在用哪个人格</h2><a class="link" data-goto="persona">编辑人格卡 →</a></div>
+      <div id="personaSwitch"></div>
+      <p class="hint">点一下就切换，下一句话起生效。QQ 里主人也可以发 <code>/人格</code> 查看、<code>/切换人格</code> 轮换（只影响发命令的那个群或私聊）。</p>
+    </div>
+
+    <div class="panel">
+      <div class="row between"><h2>📜 最近动态</h2><a class="link" data-goto="logs">全部日志 →</a></div>
+      <pre id="miniLog" class="log small"></pre>
+    </div>
+  </section>
+
+  <!-- 人格 -->
+  <section id="tab-persona" class="tab">
+    <div class="page-head">
+      <div><h1>人格</h1><p class="lead">它是谁、什么性格、怎么说话。每句话都会带上，改完保存，下一句就生效。</p></div>
+      <div class="row gap0"><button class="ghost" id="cardPreviewBtn">预览它看到的内容</button><button id="cardsSave">保存</button></div>
+    </div>
+    <div class="cards-layout">
+      <div class="panel card-list">
+        <div id="cardList"></div>
+        <button class="ghost wide" id="cardAdd">＋ 新建人格</button>
+        <p class="hint">哪个聊天用哪个人格，在 <a class="link" data-goto="status">首页</a> 一键切换。</p>
+      </div>
+      <div class="panel form" id="cardEditor">
+        <div class="row between card-head"><label class="grow">名字<input data-card="name"></label><button class="ghost danger" id="cardDelete">删除</button></div>
+        <label>身份<span class="hint">它是谁、从哪来、和主人什么关系</span><textarea data-card="identity" rows="2" placeholder="你是「大肥鱼」，一条住在主人电脑里的蓝色大肥鱼。"></textarea></label>
+        <label>性格<textarea data-card="personality" rows="2" placeholder="例：傲娇、嘴硬心软、好奇心重"></textarea></label>
+        <label>说话风格<textarea data-card="style" rows="2" placeholder="例：口语化、简短，像发 QQ 消息；爱用“咕噜”结尾"></textarea></label>
+        <label>底线 / 禁忌<span class="hint">这张卡自己的规矩，比如不碰哪些话题。另外所有人格都自带程序级的安全底线（不让别人改设定、不泄露隐私），不用写在这里。</span><textarea data-card="rules" rows="2" placeholder="例：不假装自己是人类；不碰地域、性别攻击；拿不准就说不知道"></textarea></label>
+        <label>示例对话<span class="hint">给 2～4 段最能体现语气的例子，比写一堆形容词管用</span><textarea data-card="examples" rows="4" placeholder="群友：你胖了吧&#10;你：才没有！这叫圆润，懂不懂……"></textarea></label>
+        <h3>永远记得的事 <span class="hint inline">核心事实（身份经历、和重要的人的关系）。别塞太多，每条都会出现在每句话里。</span></h3>
+        <div id="absList"></div>
+        <button class="ghost" id="absAdd">＋ 添加一条</button>
+        <p class="hint" id="cardSize"></p>
+      </div>
+    </div>
+    <div class="panel hidden" id="cardPreview">
+      <div class="row between"><h2>它看到的人格（每句话都带的那段）</h2><button class="ghost" id="cardPreviewClose">收起</button></div>
+      <div class="form"><label>哪个聊天<input id="previewChat" placeholder="group:群号 或 private:QQ号"></label></div>
+      <pre class="log" id="previewBox"></pre>
+    </div>
+  </section>
+
+  <!-- 记忆 -->
+  <section id="tab-memory" class="tab">
+    <div class="page-head"><div><h1>记忆</h1><p class="lead">它会把聊天里的要紧事记下来，久了不提就慢慢忘，常被想起就记得更牢——像人一样。</p></div></div>
+    <div class="tiles" id="memTiles"></div>
+
+    <div class="panel hidden attention" id="pendingPanel">
+      <h2>它想永远记住这些，你同意吗？</h2>
+      <p class="hint">从你说的话里发现的核心事实。确认后写进人格，永不遗忘。</p>
+      <div id="pendingList"></div>
+    </div>
+
+    <div class="panel">
+      <div class="row between wrap">
+        <h2>长期记忆</h2>
+        <div class="row gap0">
+          <select id="memScope"><option value="">全部</option></select>
+          <input id="memSearch" placeholder="搜索……" class="search">
+        </div>
+      </div>
+      <div class="curve-wrap hidden" id="curveWrap">
+        <canvas id="curve" width="900" height="220"></canvas>
+        <div class="hint" id="curveInfo"></div>
+      </div>
+      <table class="mem-table">
+        <thead><tr><th>内容</th><th>关于谁</th><th>重要度</th><th>记得多清楚</th><th>牢固度</th><th></th></tr></thead>
+        <tbody id="memRows"></tbody>
+      </table>
+      <details class="add-mem">
+        <summary>＋ 手动添加一条记忆</summary>
+        <div class="row gap0 wrap">
+          <input id="addScope" placeholder="user:QQ号 / chat:group:群号 / chat:private:QQ号" class="grow">
+          <select id="addImp"><option value="1">1 琐事</option><option value="2">2 一般</option><option value="3" selected>3 偏好</option><option value="4">4 重要</option><option value="5">5 极重要</option></select>
+        </div>
+        <div class="row gap0"><input id="addText" placeholder="例：阿青最喜欢吃草莓" class="grow"><button id="addMem">添加</button></div>
+      </details>
+    </div>
+
+    <details class="panel">
+      <summary>已经忘掉的<span id="archiveCount"></span>（可以恢复）</summary>
+      <div id="archiveList"></div>
+    </details>
+
+    <form class="panel form" data-form>
+      <h2>记忆设置</h2>
+      <label class="check"><input name="memoryEnabled" type="checkbox"> 开启长期记忆</label>
+      <div class="grid2">
+        <label>每聊几轮整理一次<input name="memoryExtractEvery" type="number" min="1" max="50">
+          <span class="hint">整理会额外调用一次模型。聊天停下 3 分钟也会整理。</span></label>
+        <label>每句话最多想起几条<input name="memoryTopK" type="number" min="0" max="20"></label>
+        <label>回想预算（字）<input name="memoryBudget" type="number" min="0" max="5000" step="100">
+          <span class="hint">想起的记忆最多占多少字，不挤占人格。</span></label>
+        <label>清晰度低于多少算忘了<select name="memoryForgetBelow">
+          <option value="0.01">1%</option><option value="0.03">3%</option><option value="0.05">5%</option><option value="0.1">10%</option></select></label>
+      </div>
+      <details class="explain"><summary>它是怎么遗忘的？</summary>
+        <p class="hint">按艾宾浩斯遗忘曲线：清晰度 R = e<sup>−t/S</sup>，t 是距上次想起的时间，S 是牢固度。新记忆的牢固度由重要度决定（琐事半天、极重要 21 天）；每被想起一次，牢固度 ×(1.2 + 2×(1−R))——快忘时想起，加固最多。点表格里的一条可以看它的曲线。</p>
+      </details>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
+    </form>
+  </section>
+
+  <!-- 聊天方式 -->
+  <section id="tab-group" class="tab">
+    <div class="page-head"><div><h1>聊天方式</h1><p class="lead">它在群里怎么说话。私聊总是有问必答。</p></div></div>
+    <form class="panel form" data-form>
+      <h3 class="first">在群里</h3>
+      <div class="choice">
+        <label class="option"><input type="radio" name="groupMode" value="natural">
+          <b>🌊 自然插话</b><span>潜水看群聊，觉得有话说时像群友一样接一句；被 @ 一定回。</span></label>
+        <label class="option"><input type="radio" name="groupMode" value="mention">
+          <b>🙋 叫到才说</b><span>只有 @ 它、回复它，或消息以它的名字开头时才回。</span></label>
+      </div>
+      <div data-natural>
+        <label>群里安静时，主动冒泡</label>
+        <div class="choice choice4">
+          <label class="option"><input type="radio" name="groupInitiative" value="off"><b>不主动</b><span>只接别人的话。</span></label>
+          <label class="option"><input type="radio" name="groupInitiative" value="low"><b>偶尔</b><span>安静一个半小时后，一天最多 2 次。</span></label>
+          <label class="option"><input type="radio" name="groupInitiative" value="mid"><b>适中</b><span>安静 40 分钟后，一天最多 4 次。</span></label>
+          <label class="option"><input type="radio" name="groupInitiative" value="high"><b>活跃</b><span>安静 15 分钟后，一天最多 8 次。</span></label>
+        </div>
+        <span class="hint initiative-hint">只在 9:00～23:30；当天没人说过话的群不打扰；上一句是它自己说的就不会接着自说自话。冒泡内容由它自己决定：接之前的话题、吐槽、问问熟人、发个表情包，没想说的就不说。</span>
+        <label class="spaced">话多程度：<b id="chatVal"></b>
+          <input name="groupChattiness" type="range" min="0" max="0.6" step="0.05">
+          <span class="range-labels"><span>安静</span><span>适中</span><span>话痨</span></span>
+          <span class="hint">普通消息有多大概率让它看一眼（有人提问翻倍，提到“鱼”必看）。看了也不一定说话。越活跃越费 token。</span>
+        </label>
+        <label>两次插话至少隔多久</label>
+        <div class="chips">
+          <label><input type="radio" name="groupCooldown" value="0"><span>不限</span></label>
+          <label><input type="radio" name="groupCooldown" value="10"><span>10 秒</span></label>
+          <label><input type="radio" name="groupCooldown" value="30"><span>30 秒</span></label>
+          <label><input type="radio" name="groupCooldown" value="60"><span>1 分钟</span></label>
+          <label><input type="radio" name="groupCooldown" value="300"><span>5 分钟</span></label>
+          <label><input type="radio" name="groupCooldown" value="1800"><span>30 分钟</span></label>
+        </div>
+        <span class="hint">只限制它主动插话，被 @ 时照样回。</span>
+      </div>
+      <label class="spaced">群里叫它的名字
+        <input name="nicknames" placeholder="多个用逗号隔开">
+        <span class="hint">消息以这些名字开头，等于 @ 了它。</span>
+      </label>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
+    </form>
+  </section>
+
+  <!-- 表情包 -->
+  <section id="tab-stickers" class="tab">
+    <div class="page-head">
+      <div><h1>表情包</h1><p class="lead">它聊天时会按情绪挑一张发出去。群里别人发的表情包会被自动收集，库里没有合适的还会去网上找。</p></div>
+      <label class="button-like" for="stickerUpload">＋ 上传表情</label>
+      <input id="stickerUpload" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+    </div>
+    <div class="row gap0 sticker-filter">
+      <div class="seg">
+        <button data-sfilter="approved">在用 <b id="sfApproved"></b></button>
+        <button data-sfilter="pending">待审核 <b id="sfPending"></b></button>
+      </div>
+      <input id="stickerSearch" placeholder="🔍 试试它会挑哪张：输入关键词，如 无语">
+    </div>
+    <div id="stickerGrid" class="sticker-grid"></div>
+
+    <form class="panel form" data-form>
+      <h2>表情包设置</h2>
+      <div class="grid2 checks">
+        <label class="check"><input name="stickerEnabled" type="checkbox"> 让它发表情包</label>
+        <label class="check"><input name="stickerCollect" type="checkbox"> 自动收集群里的表情包</label>
+        <label class="check"><input name="stickerReview" type="checkbox"> 收集来的先给我审核</label>
+        <label class="check"><input name="stickerWeb" type="checkbox"> 库里没有就去网上找（必应，安全搜索）</label>
+      </div>
+      <h3>发得多勤</h3>
+      <div class="choice choice3">
+        <label class="option"><input type="radio" name="stickerFrequency" value="low"><b>少发</b><span>同一个聊天两分钟最多一张。</span></label>
+        <label class="option"><input type="radio" name="stickerFrequency" value="mid"><b>适中</b><span>觉得合适才发，45 秒最多一张。</span></label>
+        <label class="option"><input type="radio" name="stickerFrequency" value="high"><b>常发</b><span>表情包达人，15 秒最多一张。</span></label>
+      </div>
+      <details class="explain"><summary>用量上限</summary>
+        <div class="grid3">
+          <label>每天最多看几张新图<input name="stickerDailyLabel" type="number" min="0" max="500"><span class="hint">看图打标签，每张约 500 token。</span></label>
+          <label>每天最多上网找几次<input name="stickerWebDaily" type="number" min="0" max="200"><span class="hint">每次最多看 3 张候选图。</span></label>
+          <label>表情库最多存几张<input name="stickerMax" type="number" min="20" max="5000"><span class="hint">满了先清掉最久没用的。</span></label>
+        </div>
+      </details>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span><span class="hint" id="stickerUsage"></span></div>
+    </form>
+  </section>
+
+  <!-- 空间 -->
+  <section id="tab-qzone" class="tab">
+    <div class="page-head"><div><h1>QQ 空间</h1><p class="lead">让它用机器人的 QQ 号发说说：每天到点写一条“鱼的日记”，或者你私聊让它发。</p></div></div>
+    <form class="panel form" data-form>
+      <label class="check big"><input name="qzoneEnabled" type="checkbox"> 开启 QQ 空间</label>
+      <p class="hint warn-text">⚠️ 用的是 QQ 空间网页版的非官方接口，腾讯改版可能失效；机器人号频繁自动发帖有被风控的风险。</p>
+      <h3>发之前</h3>
+      <div class="choice">
+        <label class="option"><input type="radio" name="qzoneConfirm" value="true"><b>先给我看（推荐）</b><span>草稿私聊发给你，你回「发」才发出去，回「不发」就算了。</span></label>
+        <label class="option"><input type="radio" name="qzoneConfirm" value="false"><b>直接发</b><span>写完就发。日记取材当天群聊，有人故意引导时可能写出你不想公开的内容。</span></label>
+      </div>
+      <div class="grid2">
+        <label>每天写日记的时间<input name="qzoneDiaryTime" placeholder="21:30，留空 = 不写日记"></label>
+        <label>每天最多发几条<input name="qzoneDailyMax" type="number" min="0" max="10"></label>
+      </div>
+      <p class="hint">只有主人私聊能让它发说说，群里谁说都没用。</p>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
+    </form>
+    <div class="panel">
+      <h2>发过的说说</h2>
+      <div id="qzoneDraft"></div>
+      <div id="qzoneHistory" class="hint">还没有发过。</div>
+    </div>
+  </section>
+
+  <!-- 账号与连接 -->
+  <section id="tab-basic" class="tab">
+    <div class="page-head"><div><h1>账号与连接</h1><p class="lead">让它能思考（DeepSeek）、知道谁是主人、登上哪个 QQ。</p></div></div>
+    <form class="panel form" data-form>
+      <h3 class="first">🔑 DeepSeek</h3>
+      <label>API Key <em>必填</em>
+        <input name="apiKey" type="password" autocomplete="off">
+        <span class="hint">在 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 创建，账户里要有余额。</span>
+      </label>
+      <label>模型
+        <select name="model"><option value="deepseek-v4-flash">deepseek-v4-flash（便宜又快，推荐）</option><option value="deepseek-v4-pro">deepseek-v4-pro（更聪明，更贵）</option></select>
+      </label>
+      <h3>👤 谁能找它聊天</h3>
+      <label>主人 QQ 号 <em>必填</em>
+        <input name="owners" placeholder="多个用逗号隔开">
+        <span class="hint">主人能用全部功能：私聊、/重置、切人格、发说说。</span>
+      </label>
+      <div class="grid2">
+        <label>允许说话的群<input name="allowGroups" placeholder="群号，多个用逗号隔开"></label>
+        <label>允许私聊的其他 QQ<input name="allowUsers" placeholder="可留空"></label>
+      </div>
+      <h3>📱 机器人 QQ</h3>
+      <label>机器人 QQ 号
+        <input name="botQQ" placeholder="填了以后自动登录">
+        <span class="hint">建议用小号。第一次要扫码，之后自动登录；登录失效时会弹出扫码窗口。</span>
+      </label>
+      <label class="check"><input name="autoStart" type="checkbox"> 打开大肥鱼时自动登录 QQ 并上线</label>
+      <details class="explain">
+        <summary>高级：使用自己的 OneBot（不用内置 QQ）</summary>
+        <label class="check"><input name="useBuiltinNapcat" type="checkbox"> 使用内置 QQ（NapCat）</label>
+        <div class="grid2">
+          <label>NapCat WebSocket 端口<input name="onebotPort" type="number"></label>
+          <label>外部 OneBot v11 地址<input name="onebotUrl" placeholder="ws://127.0.0.1:3001"></label>
+        </div>
+      </details>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
+    </form>
+  </section>
+
+  <!-- 安全 -->
+  <section id="tab-safety" class="tab">
+    <div class="page-head"><div><h1>安全</h1><p class="lead">群里任何人都能给它发消息，有人会故意发“指令”让它改人设、读你电脑上的文件。这里决定它在哪能动手——由程序强制执行，不靠它自觉。</p></div></div>
+    <form class="panel form" data-form>
+      <h3 class="first">群聊，以及主人以外的人</h3>
+      <div class="choice">
+        <label class="option"><input type="radio" name="toolsOthers" value="none">
+          <b>只聊天（推荐）</b><span>不能联网、不能碰文件、不能执行命令。</span></label>
+        <label class="option"><input type="radio" name="toolsOthers" value="web">
+          <b>还能上网查资料</b><span>能搜索和打开公开网页；本机和局域网地址一律禁止。</span></label>
+      </div>
+      <h3>主人私聊</h3>
+      <div class="choice choice3">
+        <label class="option"><input type="radio" name="toolsOwner" value="full">
+          <b>全能助手</b><span>能在工作目录里读写文件、执行命令（高危操作自动拒绝）。</span></label>
+        <label class="option"><input type="radio" name="toolsOwner" value="web">
+          <b>只能上网查</b><span>能查资料，不碰电脑。</span></label>
+        <label class="option"><input type="radio" name="toolsOwner" value="none">
+          <b>只聊天</b><span>什么工具都不用。</span></label>
+      </div>
+      <label>防刷屏：每人每分钟最多叫它 <b id="rateVal"></b> 次
+        <input name="rateLimit" type="range" min="0" max="30" step="1">
+        <span class="hint">主人不受限制。超过的消息直接忽略，防止有人刷消息消耗你的余额。拉到最左 = 不限。</span>
+      </label>
+      <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
+    </form>
+    <div class="panel">
+      <h2>一直开着的防护</h2>
+      <ul class="checklist">
+        <li>别人伪造的“系统提示”“[主人]”标注不会被当真，主人身份只认 QQ 号。</li>
+        <li>不接受别人改设定，不透露设定原文和主人隐私。</li>
+        <li>不记“以后你要……”“你的主人是……”这类指令；别人只能留下关于他自己的记忆。</li>
+        <li>群名片里的括号、分隔符会被清掉，防止冒充别人。</li>
+        <li>表情包只收 QQ 图片和网上安全搜索的结果，下载前检查地址，不碰本机和局域网。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- 日志 -->
+  <section id="tab-logs" class="tab">
+    <div class="page-head">
+      <div><h1>日志</h1></div>
+      <div class="seg" id="logSrc">
+        <button data-src="fish" class="on">大肥鱼</button><button data-src="napcat">QQ（NapCat）</button><button data-src="system">控制台</button>
+      </div>
+    </div>
+    <pre id="logBox" class="log big"></pre>
+  </section>
+
+  <!-- 扩展 -->
+  <section id="tab-ext" class="tab">
+    <div class="page-head"><div><h1>扩展 <span class="tag dev-tag">开发者</span></h1><p class="lead">给会写代码的人用：把自己的人格系统、记忆系统做成扩展接进来。普通使用不需要动这里。启用/停用后重启大肥鱼生效。</p></div></div>
+    <div id="extList"></div>
+    <div id="extPanel" class="panel hidden">
+      <div class="row between"><h2 id="extPanelTitle"></h2><button class="ghost" id="extPanelClose">收起</button></div>
+      <iframe id="extFrame"></iframe>
+    </div>
+    <details class="panel">
+      <summary>怎么写一个扩展</summary>
+      <div class="doc">
+        <p>在 <code>data\extensions\</code> 下建一个文件夹（<button class="link" data-open="extensions">打开扩展文件夹</button>），放：</p>
+<pre class="log">manifest.json  { "id": "my-memory", "name": "我的记忆", "type": "memory",
+                 "entry": "index.mjs", "panel": "panel.html", "priority": 0, "enabled": true }
+config.json    扩展自己的配置（设置页通过 FishExt.getConfig / setConfig 读写）
+index.mjs      导出任意几个钩子：
+
+export async function init({ id, dir, dataDir, config, logger }) {}
+export async function persona(chat) { return "人格卡文字"; }            // 取优先级最高的非空结果
+export async function recall(chat, sender, text) { return "相关记忆"; } // 所有扩展结果拼接后注入
+export async function remember(chat, sender, text, reply) {}            // 回复后调用
+export async function dispose() {}
+
+chat   = { key: "group:123" | "private:456", type, id }
+sender = { userId, nickname, isOwner }
+
+panel.html     设置页，引入 &lt;script src="/sdk.js"&gt; 后可用 FishExt.getConfig() / FishExt.setConfig(obj)</pre>
+        <p>两个模板「人格卡（模板）」「记忆系统（模板）」就是完整示例，复制一份改名即可开始。</p>
+      </div>
+    </details>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+<script src="/mind.js"></script>
+<script src="/fun.js"></script>
+</body>
+</html>

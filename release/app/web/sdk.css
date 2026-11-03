@@ -1,0 +1,16 @@
+/* 扩展设置页的基础样式，与控制台保持一致 */
+body { margin: 0; padding: 4px 2px; font: 14px "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif; color: #1d2433; }
+h3 { font-size: 15px; margin: 16px 0 6px; }
+h3:first-child { margin-top: 0; }
+label { display: block; margin-bottom: 14px; font-weight: 600; }
+input, textarea, select { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 9px 11px; border: 1px solid #e3e8f0; border-radius: 8px; font: inherit; font-weight: 400; background: #fbfcfe; }
+textarea { resize: vertical; }
+button { font: inherit; border: 0; border-radius: 8px; padding: 8px 18px; background: #2f7cf6; color: #fff; cursor: pointer; }
+button.ghost { background: transparent; color: #2f7cf6; border: 1px solid #c9d8f2; }
+.hint { font-size: 12px; color: #6b7486; font-weight: 400; line-height: 1.6; margin: 4px 0 8px; }
+.card { border: 1px solid #e3e8f0; border-radius: 10px; padding: 12px; margin-bottom: 10px; display: grid; gap: 8px; }
+.card input, .card textarea { margin: 0; }
+.card .del { justify-self: end; padding: 4px 12px; }
+.bar { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.bar .hint { margin: 0; }
+code { background: #eef2f8; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
