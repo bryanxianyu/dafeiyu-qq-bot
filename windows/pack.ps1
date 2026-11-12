@@ -1,15 +1,16 @@
 ﻿# 大肥鱼打包工具：生成开箱即用的 zip（内置 Node、精简版 DSH、插件、NapCat 一键包）
-#   pwsh ./pack.ps1                 用 plugin/package.json 里的版本
-#   pwsh ./pack.ps1 -Bump           补丁版本 +1 再打包
-#   pwsh ./pack.ps1 -DshVersion x   指定内置的 DSH 版本（换版本后记得用 test/ 里的脚本回归一遍）
-#   pwsh ./pack.ps1 -Refresh        丢掉缓存，重新下载 DSH / NapCat
+#   pwsh ./windows/pack.ps1                 用 plugin/package.json 里的版本
+#   pwsh ./windows/pack.ps1 -Bump           补丁版本 +1 再打包
+#   pwsh ./windows/pack.ps1 -DshVersion x    指定内置的 DSH 版本
+#   pwsh ./windows/pack.ps1 -Refresh        丢掉缓存，重新下载 DSH / NapCat
 param(
     [switch]$Bump,
     [string]$DshVersion = '0.2.1-rc.5',
     [switch]$Refresh
 )
 $ErrorActionPreference = 'Stop'
-$Root = $PSScriptRoot
+$Windows = $PSScriptRoot
+$Root = Split-Path -Parent $Windows
 $Cache = Join-Path $Root '.build-cache'
 New-Item -ItemType Directory -Force $Cache | Out-Null
 function Step($msg) { Write-Host "▶ $msg" -ForegroundColor Cyan }
@@ -28,7 +29,7 @@ if ($Bump) {
 $version = $pkg.version
 Step "大肥鱼 v$version（DSH $DshVersion）"
 
-foreach ($f in @(Get-ChildItem (Join-Path $Root 'plugin\lib') -Filter *.js) + @(Get-ChildItem (Join-Path $Root 'release\app'), (Join-Path $Root 'release\extensions') -Recurse -Include *.mjs, *.js)) {
+foreach ($f in @(Get-ChildItem (Join-Path $Root 'plugin\lib') -Filter *.js) + @(Get-ChildItem (Join-Path $Root 'release\app'), (Join-Path $Root 'release\extensions'), (Join-Path $Windows 'app') -Recurse -Include *.mjs, *.js)) {
     node --check $f.FullName
     if ($LASTEXITCODE -ne 0) { throw "语法错误：$($f.Name)" }
 }
@@ -51,22 +52,28 @@ if (-not (Test-Path "$dshFull\node_modules\@deepseek-ai\dsh")) {
     Push-Location $dshFull; npm install --no-audit --no-fund; $code = $LASTEXITCODE; Pop-Location
     if ($code -ne 0) { throw 'npm install 失败' }
 }
-if (-not (Test-Path "$dshPruned\node_modules\@deepseek-ai\dsh")) {
+if (-not (Test-Path "$dshPruned\node_modules\@deepseek-ai\dsh") -or -not (Test-Path "$dshPruned\node_modules\yaml\package.json")) {
     Step '精简 DSH（只保留 fish profile 用到的部分）'
     $probe = Join-Path $Cache 'probe-home'
     Remove-Item -Recurse -Force $probe -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force "$probe\profiles\fish\node_modules\dsh-fish" | Out-Null
     Copy-Item "$Root\plugin\*" "$probe\profiles\fish\node_modules\dsh-fish" -Recurse
     Copy-Item "$Root\release\profile\package.json" "$probe\profiles\fish\package.json"
-    $env:DSH_HOME = $probe
-    node "$dshFull\node_modules\@deepseek-ai\dsh\lib\bin.js" --profile fish --dump-config | Set-Content "$Cache\dump.yml" -Encoding utf8NoBOM
-    Remove-Item Env:DSH_HOME
+    $previousDshHome = $env:DSH_HOME
+    try {
+        $env:DSH_HOME = $probe
+        node "$dshFull\node_modules\@deepseek-ai\dsh\lib\bin.js" --profile fish --dump-config | Set-Content "$Cache\dump.yml" -Encoding utf8NoBOM
+        if ($LASTEXITCODE -ne 0) { throw '导出 fish profile 配置失败' }
+    } finally {
+        $env:DSH_HOME = $previousDshHome
+    }
     Remove-Item -Recurse -Force $dshPruned -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $dshPruned | Out-Null
     Copy-Item "$dshFull\node_modules" $dshPruned -Recurse
-    node "$Root\build\prune.mjs" "$dshPruned\node_modules" "$Cache\dump.yml" '@deepseek-ai/dsh-base' '@deepseek-ai/schemastery' '@deepseek-ai/dsh-agent' '@deepseek-ai/dsh-llm'
+    node "$Windows\build\prune.mjs" "$dshPruned\node_modules" "$Cache\dump.yml" '@deepseek-ai/dsh-base' '@deepseek-ai/schemastery' '@deepseek-ai/dsh-agent' '@deepseek-ai/dsh-llm' 'yaml'
     if ($LASTEXITCODE -ne 0) { throw '精简失败' }
 }
+if (-not (Test-Path "$dshPruned\node_modules\yaml\package.json")) { throw '内置 DSH 缺少模型同步所需的 yaml 依赖' }
 
 # ---------- NapCat 一键包 ----------
 $napcatCache = Join-Path $Cache 'napcat'
@@ -107,17 +114,18 @@ Set-Content "$stage\napcat\来源说明.txt" @"
 
 # 控制台（网页 GUI + 进程管理）与扩展模板
 Copy-Item "$Root\release\app\*" "$stage\app" -Recurse
+Copy-Item "$Windows\app\napcat-windows.mjs" "$stage\app"
 Copy-Item "$Root\release\extensions" "$stage\app\extensions" -Recurse
 $bom = New-Object System.Text.UTF8Encoding $true
-$readme = (Get-Content "$Root\release\使用说明.txt" -Raw).Replace('__FISH_VERSION__', $version).Replace('__DSH_VERSION__', $DshVersion).Replace('__NAPCAT_VERSION__', $napcatVersion)
+$readme = (Get-Content "$Windows\release\使用说明.txt" -Raw).Replace('__FISH_VERSION__', $version).Replace('__DSH_VERSION__', $DshVersion).Replace('__NAPCAT_VERSION__', $napcatVersion)
 [IO.File]::WriteAllText("$stage\使用说明.txt", $readme.Replace("`r`n", "`n").Replace("`n", "`r`n"), $bom)
 
 # ---------- exe：托盘启动器 + 安装程序（Windows 自带的 C# 编译器，无需额外工具） ----------
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$icon = Join-Path $Root 'build\fish.ico'
-if (-not (Test-Path $icon)) { pwsh -NoProfile -File (Join-Path $Root 'build\make-icon.ps1') $icon | Out-Null }
+$icon = Join-Path $Windows 'build\fish.ico'
+if (-not (Test-Path $icon)) { pwsh -NoProfile -File (Join-Path $Windows 'build\make-icon.ps1') $icon | Out-Null }
 Step '编译 大肥鱼.exe'
-& $csc -nologo -optimize -target:winexe "-win32icon:$icon" -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll "-out:$stage\大肥鱼.exe" (Join-Path $Root 'build\launcher.cs')
+& $csc -nologo -optimize -target:winexe "-win32icon:$icon" -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll "-out:$stage\大肥鱼.exe" (Join-Path $Windows 'build\launcher.cs')
 if ($LASTEXITCODE -ne 0) { throw '启动器编译失败' }
 
 Step '压缩（便携版 zip，同时作为安装程序的载荷）'
@@ -130,7 +138,7 @@ $work = Join-Path $Cache 'setup-build'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 Copy-Item $zip "$work\payload.zip"
-(Get-Content (Join-Path $Root 'build\setup.cs') -Raw).Replace('__VERSION__', $version) | Set-Content "$work\setup.cs" -Encoding utf8
+(Get-Content (Join-Path $Windows 'build\setup.cs') -Raw).Replace('__VERSION__', $version) | Set-Content "$work\setup.cs" -Encoding utf8
 $setup = Join-Path $Root "dist\大肥鱼-Setup-v$version.exe"
 Push-Location $work
 & $csc -nologo -optimize -target:winexe "-win32icon:$icon" -resource:payload.zip,payload.zip -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.IO.Compression.dll -r:System.IO.Compression.FileSystem.dll -r:Microsoft.CSharp.dll -r:System.Core.dll "-out:$setup" setup.cs

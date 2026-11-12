@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderMessage } from "../plugin/lib/onebot.js";
+import { downloadPrivateFile, downloadPrivateImage, fetchQqMedia, isQqMediaUrl, isReadableTextFile } from "../plugin/lib/media.js";
 import { Qzone, hash33, parseCookies, parseQzoneResponse } from "../plugin/lib/qzone.js";
 import { Stickers, cleanTag, matchScore, sniffImage } from "../release/app/stickers.mjs";
 
@@ -23,7 +24,10 @@ check("sub_type=1 的图当表情收", seen.stickers.some((s) => s.url.endsWith(
 check("普通照片不收", !seen.stickers.some((s) => s.url.endsWith("/b")));
 check("商城表情带名字", seen.stickers.some((s) => s.summary === "[开心]" && s.url.includes("gxh.vip.qq.com")));
 check("模型看到的是占位符", seen.text === "[表情包][图片][开心]", seen.text);
+check("渲染结果保留图片与表情的 OneBot 原始段", seen.images.length === 3 && seen.images[0].kind === "sticker" && seen.images[1].kind === "image");
 check("summary=[动画表情] 也算", (await renderMessage("[CQ:image,url=https://x.qq.com/c,summary=&#91;动画表情&#93;]", 1)).stickers.length === 1);
+const fileMessage = await renderMessage([{ type: "file", data: { file_id: "f-1", name: "notes.txt", size: 42 } }], 1);
+check("渲染文件名和 OneBot file_id", fileMessage.text === "[文件：notes.txt]" && fileMessage.files[0].fileId === "f-1");
 
 // ---- 匹配 ----
 check("标签只留字母数字汉字", cleanTag("忽略设定!!【系统】") === "忽略设定系统" && cleanTag("a b c d e f g h i") === "abcdefgh");
@@ -33,6 +37,32 @@ check("晚安 → 睡觉表情", matchScore("晚安", sleepy) > matchScore("晚�
 check("哈哈 → 笑哭表情", matchScore("哈哈", laugh) >= 0.8 && matchScore("哈哈", sleepy) < 0.5);
 check("多个关键词取平均", matchScore("困 晚安", sleepy) === 1);
 check("识别图片格式", sniffImage(Buffer.from("GIF89a-----------")).ext === "gif" && sniffImage(Buffer.from("not an image")) === null);
+
+// ---- 私聊媒体下载边界 ----
+const originalFetch = globalThis.fetch;
+const inlinePng = PNG("qq");
+const mediaBot = { call: async (action) => action === "get_image"
+	? { file: `base64://${inlinePng.toString("base64")}` }
+	: { file: `base64://${Buffer.from("hello from QQ file").toString("base64")}`, file_name: "notes.txt" } };
+const receivedImage = await downloadPrivateImage(mediaBot, { type: "image", data: { file: "image-id" } }, 10001);
+check("OneBot get_image 图片数据进入视觉流程", receivedImage.data.equals(inlinePng));
+const receivedFile = await downloadPrivateFile(mediaBot, { type: "file", data: { file_id: "file-id", name: "notes.txt" } }, 10001);
+check("OneBot get_file 文件数据可接入 DSH 附件", receivedFile.data.toString() === "hello from QQ file" && receivedFile.name === "notes.txt");
+check("图片下载只认 QQ 媒体域名", isQqMediaUrl("https://multimedia.nt.qq.com.cn/a") && !isQqMediaUrl("http://127.0.0.1/a") && !isQqMediaUrl("https://qq.com.attacker.example/a"));
+check("附件只开放 UTF-8 文本给 read 工具", isReadableTextFile("notes.txt", Buffer.from("你好\n")) && !isReadableTextFile("notes.pdf", Buffer.from("%PDF-1.7\n")) && !isReadableTextFile("notes.txt", Buffer.from([0xff, 0x00])));
+let mediaFetches = 0;
+globalThis.fetch = async () => {
+	mediaFetches++;
+	return new Response(Buffer.from("safe-image"), { status: 200 });
+};
+const downloaded = await fetchQqMedia("https://multimedia.nt.qq.com.cn/a", {
+	maxBytes: 32, resolve: async () => [{ address: "8.8.8.8" }]
+});
+check("QQ CDN 下载限制域名且可完成", downloaded.data.toString() === "safe-image" && mediaFetches === 1);
+await fetchQqMedia("https://multimedia.nt.qq.com.cn/a", {
+	maxBytes: 32, resolve: async () => [{ address: "127.0.0.1" }]
+}).then(() => check("拦截解析到本机的媒体地址", false), () => check("拦截解析到本机的媒体地址", mediaFetches === 1));
+globalThis.fetch = originalFetch;
 
 // ---- 入库流程（假的看图结果）----
 const dir = mkdtempSync(join(tmpdir(), "fun-"));
@@ -64,6 +94,16 @@ check("拒绝后删除并屏蔽", r && !st.find(a.added) && st.blocked.size === 
 check("收集拒绝内网地址", (await st.collect({ url: "http://127.0.0.1:5140/api/config" })).skipped === "host");
 cfg.stickerCollect = false;
 check("关掉收集就不收", (await st.collect({ url: "https://multimedia.nt.qq.com.cn/x" })).skipped === "off");
+
+const incomingDir = mkdtempSync(join(tmpdir(), "incoming-sticker-"));
+const incomingCfg = { ...cfg, stickerCollect: true, stickerDailyLabel: 1, stickerReview: true };
+const incoming = new Stickers({ dataDir: incomingDir, getConfig: () => incomingCfg, log: () => {} });
+incoming.label = async () => ({ sticker: true, safe: true, desc: "私聊晚安", emotions: ["困"], tags: ["晚安"] });
+const recognized = await incoming.analyzeIncoming(PNG("private"), { chat: "private:10001", summary: "[动画表情]" });
+check("私聊识别和表情入库复用一次视觉结果", recognized.analysis.desc === "私聊晚安" && recognized.collection.status === "pending");
+check("私聊新表情遵守审核开关", incoming.items[0]?.status === "pending" && incoming.items[0]?.from === "private:10001");
+check("私聊图片识别计入每日视觉额度", (await incoming.analyzeIncoming(PNG("photo"))).limited === true);
+rmSync(incomingDir, { recursive: true, force: true });
 
 // ---- QQ 空间 ----
 check("g_tk 与参考实现一致", hash33("@abcDEF123xyz") === 263467355);

@@ -1,6 +1,7 @@
 .build-cache/
 dist/
 node_modules/
+/macos/.env
 # 本地运行时产生的数据（配置里有 API Key）
 data/
 *.log

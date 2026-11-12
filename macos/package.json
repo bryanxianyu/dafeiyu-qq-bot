@@ -1,0 +1,11 @@
+{
+  "name": "dafeiyu-macos-runtime",
+  "private": true,
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.5",
+    "yaml": "2.9.1"
+  }
+}

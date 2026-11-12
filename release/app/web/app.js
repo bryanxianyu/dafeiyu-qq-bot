@@ -27,6 +27,7 @@ function go(tab) {
   $$(".tab").forEach((s) => s.classList.toggle("active", s.id === `tab-${tab}`));
   if (tab === "ext") loadExtensions();
   if (tab === "logs") pollLogs(true);
+  if (tab === "basic") refreshModels();
   if (state) render();
   window.onTabShow?.(tab);
 }
@@ -40,6 +41,69 @@ document.addEventListener("click", (e) => {
 
 // ---------- 表单 ----------
 let state = null;
+let modelCatalog = null;
+let refreshingModels = false;
+const modelFields = { chatModel: "使用默认模型", memoryModel: "跟随聊天", visionModel: "跟随聊天" };
+
+function updateModelOptions() {
+  const providers = modelCatalog?.providers ?? [];
+  for (const [field, fallback] of Object.entries(modelFields)) {
+    const select = $(`select[name=${field}]`);
+    const value = select.value;
+    select.replaceChildren(new Option(fallback, ""));
+    for (const provider of providers) {
+      for (const model of provider.models) {
+        if (field === "visionModel" && !model.inputModalities?.includes("image")) continue;
+        select.add(new Option(`${model.name || model.id} · ${provider.id}`, JSON.stringify([provider.id, model.id])));
+      }
+    }
+    if (value && ![...select.options].some((option) => option.value === value)) {
+      select.add(new Option(`当前选择（目录中不可用）：${value}`, value));
+    }
+    select.value = value;
+  }
+  updateEffortOptions();
+}
+
+function updateEffortOptions() {
+  const chatModel = $("select[name=chatModel]").value;
+  for (const [field, modelField] of [["chatReasoningEffort", "chatModel"], ["memoryReasoningEffort", "memoryModel"], ["visionReasoningEffort", "visionModel"]]) {
+    const select = $(`select[name=${field}]`);
+    const value = select.value;
+    let ref = $(`select[name=${modelField}]`).value || (modelField !== "chatModel" ? chatModel : "");
+    let route;
+    try { route = ref ? JSON.parse(ref) : modelCatalog?.chat && [modelCatalog.chat.provider, modelCatalog.chat.model]; } catch {}
+    const model = modelCatalog?.providers?.find((p) => p.id === route?.[0])?.models?.find((m) => m.id === route?.[1]);
+    select.replaceChildren(new Option(field === "chatReasoningEffort" ? "模型默认" : "跟随聊天", ""));
+    if (field !== "chatReasoningEffort") select.add(new Option("使用此模型默认", "default"));
+    for (const effort of model?.reasoning?.efforts ?? []) select.add(new Option(effort.name || effort.id, effort.id));
+    if (value && ![...select.options].some((o) => o.value === value)) select.add(new Option(`当前选择（模型未声明支持）：${value}`, value));
+    select.value = value;
+  }
+}
+for (const field of Object.keys(modelFields)) $(`select[name=${field}]`).addEventListener("change", updateEffortOptions);
+
+async function refreshModels() {
+  if (refreshingModels) return;
+  refreshingModels = true;
+  const status = $("#modelStatus");
+  try {
+    modelCatalog = await api("/api/models");
+    updateModelOptions();
+    const count = modelCatalog.providers.reduce((sum, provider) => sum + provider.models.length, 0);
+    status.textContent = count ? `已读取 ${count} 个模型` : "fish profile 暂无可选模型";
+    render();
+  } catch {
+    status.textContent = "暂时无法读取模型。请启动大肥鱼，或查看 DSH 日志后重试。";
+  } finally {
+    refreshingModels = false;
+  }
+}
+$("#refreshModels").addEventListener("click", refreshModels);
+setInterval(() => {
+  if ($("#tab-basic").classList.contains("active")) refreshModels();
+}, 10000);
+
 
 function fillForms(config) {
   for (const form of $$("[data-form]")) fillOne(form, config);
@@ -48,11 +112,14 @@ function fillForms(config) {
 function fillOne(form, config) {
   {
     for (const el of form.elements) {
-      if (!el.name || !(el.name in config || el.name === "apiKey")) continue;
+      if (!el.name || !(el.name in config || el.name === "apiKey" || el.name === "onebotToken")) continue;
       const v = config[el.name];
       if (el.name === "apiKey") {
         el.value = "";
         el.placeholder = config.apiKeySet ? `已设置（尾号 ${config.apiKeyTail}），不改就留空` : "sk-……";
+      } else if (el.name === "onebotToken") {
+        el.value = "";
+        el.placeholder = config.onebotTokenSet ? "已设置，不改就留空" : "未设置可留空";
       } else if (el.type === "checkbox") el.checked = Boolean(v);
       else if (el.type === "radio") el.checked = el.value === String(v);
       else if (el.tagName === "SELECT") {
@@ -63,8 +130,16 @@ function fillOne(form, config) {
     }
     setDirty(form, false);
   }
+  syncOnebotUi();
   syncGroupUi();
+  if (form.closest("#tab-basic")) updateEffortOptions();
 }
+
+function syncOnebotUi() {
+  const builtin = $("input[name=useBuiltinNapcat]");
+  $("input[name=onebotToken]").disabled = builtin.checked && !builtin.disabled;
+}
+$("input[name=useBuiltinNapcat]").addEventListener("change", syncOnebotUi);
 
 /** 表单有没改的：按钮变成「保存修改」，旁边提示；离开页面前提醒 */
 function setDirty(form, dirty) {
@@ -82,7 +157,7 @@ window.addEventListener("beforeunload", (e) => {
 function readForm(form) {
   const out = {};
   for (const el of form.elements) {
-    if (!el.name) continue;
+    if (!el.name || el.disabled || (el.name === "onebotToken" && !el.value.trim())) continue;
     if (el.type === "radio") {
       if (el.checked) out[el.name] = el.value;
     } else if (el.type === "checkbox") out[el.name] = el.checked;
@@ -137,6 +212,19 @@ const pill = (el, text, cls) => {
 let qrShown = 0;
 async function render() {
   if (!state) return;
+  if (state.platform === "darwin") {
+    for (const label of $$("[data-windows-qq]")) {
+      label.classList.add("hidden");
+      $("input", label).disabled = true;
+    }
+    syncOnebotUi();
+    const details = $("#onebotSettings");
+    const summary = $("summary", details);
+    if (summary.textContent !== "外部 OneBot v11") {
+      summary.textContent = "外部 OneBot v11";
+      details.open = true;
+    }
+  }
   $("#ver").textContent = `v${state.version}`;
   $("#extCount").textContent = state.extensions || "";
   $("#pendingBadge").textContent = state.pending || "";
@@ -193,19 +281,25 @@ async function render() {
   const f = state.fish;
   const fb = $("#fishBody");
   const c = state.config;
-  const rows = `<div class="kv"><span>模型</span><b>${c.model}</b><span>主人</span><b>${c.owners.join(", ") || "未设置"}</b><span>群</span><b>${c.allowGroups.join(", ") || "无"}</b><span>群聊</span><b>${c.groupMode === "natural" ? `自然插话（${Math.round(c.groupChattiness * 100)}%）` : "只在被叫到时"}</b></div>`;
+  const rows = `<div class="kv"><span>模型</span><b id="activeChatModel"></b><span>主人</span><b>${c.owners.join(", ") || "未设置"}</b><span>群</span><b>${c.allowGroups.join(", ") || "无"}</b><span>群聊</span><b>${c.groupMode === "natural" ? `自然插话（${Math.round(c.groupChattiness * 100)}%）` : "只在被叫到时"}</b></div>`;
   if (f.status === "running" && f.connected) pill($("#fishPill"), "在线", "ok");
   else if (f.status === "running" || f.status === "starting") pill($("#fishPill"), "等待 QQ 连接", "warn");
   else if (f.status === "crashed") pill($("#fishPill"), "反复崩溃", "bad");
   else pill($("#fishPill"), "未启动");
   fb.innerHTML = rows + (f.lastError && f.status !== "running" ? `<p class="hint" style="color:var(--red)">${f.lastError.replace(/</g, "&lt;")}</p>` : "");
-  $("#fishStart").disabled = f.status === "running" || f.status === "starting" || state.missing.length > 0;
+  $("#activeChatModel").textContent = chatModelName();
+  $("#fishStart").disabled = f.status === "running" || f.status === "starting";
   $("#fishStop").disabled = f.status !== "running" && f.status !== "starting";
   $("#fishRestart").disabled = state.missing.length > 0;
   renderHome();
 }
 
 /** 首页：一句话总状态 + 新手引导 + 今天的活动 */
+function chatModelName() {
+  if (state.config.chatModel) return JSON.parse(state.config.chatModel)[1];
+  return modelCatalog?.chat?.model ?? (state.config.apiKeySet ? state.config.model : "DSH 默认模型");
+}
+
 function renderHome() {
   const n = state.napcat;
   const f = state.fish;
@@ -220,7 +314,7 @@ function renderHome() {
     [level, title, sub] = ["off", "还没开始养鱼", "按下面的步骤填好就能上线。"];
   } else if (online) {
     const who = n.login ? `${n.login.nickname}（${n.login.uin}）` : "QQ";
-    [level, title, sub] = ["ok", `大肥鱼在线，正在用${persona || "默认"}人格聊天`, `登录的是 ${who} · 模型 ${state.config.model}`];
+    [level, title, sub] = ["ok", `大肥鱼在线，正在用${persona || "默认"}人格聊天`, `登录的是 ${who} · 模型 ${chatModelName().replace(/</g, "&lt;")}`];
   } else if (n.enabled && n.status === "running" && !n.login && n.qrcode) {
     [level, title, sub] = ["warn", "等你扫码登录 QQ", n.loginError ? `上次扫码被腾讯拒绝：${n.loginError}` : "用机器人 QQ 的手机 QQ 扫下面的二维码（托盘程序也会弹出扫码窗口）。"];
   } else if (f.status === "crashed") {
@@ -236,7 +330,7 @@ function renderHome() {
 
   // 新手引导：没配好或还没登录时才出现
   const steps = [
-    { done: state.config.apiKeySet, text: "填 DeepSeek API Key，让它能思考", go: "basic" },
+    { done: Boolean(state.config.chatModel || modelCatalog?.chat || state.config.apiKeySet), text: "在 DSH 配置并选择聊天模型", go: "basic" },
     { done: state.config.owners.length > 0, text: "填你的 QQ 号，让它认得主人", go: "basic" },
     { done: state.config.allowGroups.length > 0, text: "填它能说话的群（不填就只能私聊）", go: "basic", optional: true },
     { done: qqOk, text: "用机器人 QQ 扫码登录" },
@@ -277,7 +371,10 @@ act("#fishRestart", "/api/fish/restart", "大肥鱼重启中……");
 async function pollState(first) {
   try {
     state = await api("/api/state");
-    if (first) fillForms(state.config);
+    if (first) {
+      fillForms(state.config);
+      refreshModels();
+    }
     render();
   } catch {
     $("#banner").innerHTML = "连不上控制台：大肥鱼是不是已经退出了？双击桌面上的「大肥鱼」重新打开。";

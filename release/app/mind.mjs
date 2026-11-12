@@ -13,6 +13,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 
 const DAY = 86400000;
+const MEMORY_QUEUE = "queued-turns.json";
+const MEMORY_RETRY_MS = 60_000;
 /** 重要度 1..5 → 初始稳定度（天）：小事半天就淡，大事三周才淡到 37% */
 const INITIAL_STABILITY = [0, 0.5, 1, 3, 7, 21];
 
@@ -132,12 +134,14 @@ function similarity(a, b) {
 
 // ---------------- 存储 ----------------
 export class Mind {
-	constructor({ dataDir, getConfig, log }) {
+	constructor({ dataDir, getConfig, generateJson, log }) {
 		this.dir = join(dataDir, "mind");
 		mkdirSync(this.dir, { recursive: true });
 		this.getConfig = getConfig;
+		this.generateJson = generateJson;
 		this.log = log;
-		this.buffers = new Map(); // chatKey -> 待提取的对话轮次
+		const queuePath = join(this.dir, MEMORY_QUEUE);
+		this.buffers = new Map(existsSync(queuePath) ? JSON.parse(readFileSync(queuePath, "utf8")) : []);
 		this.extracting = new Set();
 		this.cards = this.read("cards.json", { cards: [structuredClone(DEFAULT_CARD)], defaultCard: "default", bindings: {} });
 		this.memories = this.read("memories.json", []);
@@ -157,10 +161,22 @@ export class Mind {
 			return fallback;
 		}
 	}
-	write(name, value) {
+	write(name, value, options) {
 		const p = join(this.dir, name);
-		writeFileSync(p + ".tmp", JSON.stringify(value, null, 1));
+		writeFileSync(p + ".tmp", JSON.stringify(value, null, 1), options);
 		renameSync(p + ".tmp", p);
+	}
+	setBuffer(chatKey, buffer) {
+		const previous = this.buffers.get(chatKey);
+		if (buffer.turns.length) this.buffers.set(chatKey, buffer);
+		else this.buffers.delete(chatKey);
+		try {
+			this.write(MEMORY_QUEUE, [...this.buffers], { mode: 0o600 });
+		} catch (error) {
+			if (previous) this.buffers.set(chatKey, previous);
+			else this.buffers.delete(chatKey);
+			throw error;
+		}
 	}
 	save() {
 		this.write("cards.json", this.cards);
@@ -332,14 +348,15 @@ export class Mind {
 	observe(chatKey, sender, text, reply) {
 		const cfg = this.getConfig();
 		if (!cfg.memoryEnabled) return;
-		const buf = this.buffers.get(chatKey) ?? { turns: [], last: 0 };
-		buf.turns.push({ who: sender.nickname, userId: sender.userId, isOwner: sender.isOwner, text, reply, t: now() });
-		buf.last = now();
-		this.buffers.set(chatKey, buf);
+		const previous = this.buffers.get(chatKey);
+		const t = now();
+		const turn = { who: sender.nickname, userId: sender.userId, isOwner: sender.isOwner, text, reply, t };
+		const buf = { turns: [...(previous?.turns ?? []), turn], last: t, retryAt: previous?.retryAt ?? 0 };
+		this.setBuffer(chatKey, buf);
 		if (buf.turns.length >= cfg.memoryExtractEvery) this.extract(chatKey);
 	}
 
-	/** 立即整理这个聊天还没整理的对话（/重置 前调用，免得会话里的新信息随会话一起丢掉） */
+	/** /重置前尝试整理一批，剩余对话仍留在待整理队列。 */
 	async flush(chatKey) {
 		while (this.extracting.has(chatKey)) await new Promise((r) => setTimeout(r, 300));
 		await this.extract(chatKey);
@@ -347,17 +364,24 @@ export class Mind {
 
 	/** 聊天停下来 3 分钟后，把剩下的几轮也提取掉 */
 	flushIdle() {
-		for (const [chatKey, buf] of this.buffers) if (buf.turns.length && now() - buf.last > 180000) this.extract(chatKey);
+		const cfg = this.getConfig();
+		if (!cfg.memoryEnabled) return;
+		const t = now();
+		for (const [chatKey, buf] of this.buffers) {
+			if (buf.retryAt > t) continue;
+			if (buf.retryAt || buf.turns.length >= cfg.memoryExtractEvery || t - buf.last > 180000) this.extract(chatKey);
+		}
 	}
 
 	async extract(chatKey) {
-		if (this.extracting.has(chatKey)) return;
+		const cfg = this.getConfig();
+		if (!cfg.memoryEnabled || this.extracting.has(chatKey)) return;
 		const buf = this.buffers.get(chatKey);
-		if (!buf?.turns.length) return;
-		const turns = buf.turns.splice(0);
+		if (!buf?.turns.length || buf.retryAt > now()) return;
+		// 等整理结果写入后再移出这一批，重启时仍能从磁盘恢复。
+		const turns = buf.turns.slice(0, cfg.memoryExtractEvery);
 		this.extracting.add(chatKey);
 		try {
-			const cfg = this.getConfig();
 			const card = this.cardFor(chatKey);
 			const known = this.memories
 				.filter((m) => m.scope === `chat:${chatKey}` || turns.some((x) => m.scope === `user:${x.userId}`))
@@ -367,7 +391,10 @@ export class Mind {
 			const owners = new Set(turns.filter((x) => x.isOwner).map((x) => x.userId));
 			const speakers = new Set(turns.map((x) => x.userId));
 			const flat = (s) => String(s).replace(/【/g, "[").replace(/】/g, "]").replace(/\s*[\r\n]+\s*/g, " ⏎ ");
-			const dialog = turns.map((x) => `【${x.isOwner ? "主人" : "群友"} ${x.who} QQ ${x.userId}】${flat(x.text)}\n【${card.name}】${flat(x.reply)}`).join("\n");
+			const dialog = turns.map((x) => {
+				const message = `【${x.isOwner ? "主人" : "群友"} ${x.who} QQ ${x.userId}】${flat(x.text)}`;
+				return x.reply ? `${message}\n【${card.name}】${flat(x.reply)}` : message;
+			}).join("\n");
 			const prompt = `你是「${card.name}」的记忆整理器。下面是它刚刚在${chatKey.startsWith("group") ? "QQ群" : "私聊"}里的对话。
 请提取值得长期记住的信息，输出 JSON：
 {"memories":[{"text":"…","importance":1-5,"about":"user"或"chat","userId":对应QQ号或null,"from":说这件事的人的QQ号,"keywords":["…"]}],
@@ -393,29 +420,19 @@ ${known || "（无）"}
 
 对话：
 ${dialog}`;
-			const res = await fetch("https://api.deepseek.com/chat/completions", {
-				method: "POST",
-				headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
-				body: JSON.stringify({
-					model: cfg.model,
-					messages: [{ role: "user", content: prompt }],
-					response_format: { type: "json_object" },
-					temperature: 0.2,
-					max_tokens: 1200
-				}),
-				signal: AbortSignal.timeout(60000)
-			});
-			if (!res.ok) throw new Error(`DeepSeek ${res.status}`);
-			const data = await res.json();
+			const { value: out, tokens } = await this.generateJson("memoryModel", prompt, { maxTokens: 1200 });
+			if (!Array.isArray(out.memories) || !Array.isArray(out.core)) throw new Error("记忆整理结果格式不正确");
 			this.stats.extractions++;
-			this.stats.extractedTokens += data.usage?.total_tokens ?? 0;
-			const out = JSON.parse(data.choices?.[0]?.message?.content ?? "{}");
+			this.stats.extractedTokens += tokens ?? 0;
 			let added = 0;
 			let reinforced = 0;
 			let blocked = 0;
-			for (const item of out.memories ?? []) {
+			let invalid = 0;
+			let alreadyAbsolute = 0;
+			for (const item of out.memories) {
+				if (!item || typeof item !== "object") { invalid++; continue; }
 				const text = String(item.text ?? "").trim();
-				if (!text || text.length > 200) continue;
+				if (!text || text.length > 200) { invalid++; continue; }
 				// 来源核验：不信整理器的一面之词，按“谁说的”在代码里卡死
 				const from = speakers.has(Number(item.from)) ? Number(item.from) : null;
 				const fromOwner = from !== null ? owners.has(from) : turns.every((x) => x.isOwner);
@@ -430,7 +447,7 @@ ${dialog}`;
 				const importance = Math.min(5, Math.max(1, Math.round(Number(item.importance) || 2)));
 				const keywords = (Array.isArray(item.keywords) ? item.keywords : []).map((k) => String(k).trim()).filter(Boolean).slice(0, 12);
 				// 已经是绝对记忆的事实不再进长期记忆（锚定通道里永远在场）
-				if ((card.absolute ?? []).some((a) => similarity(a.text, text) >= 0.5)) continue;
+				if ((card.absolute ?? []).some((a) => similarity(a.text, text) >= 0.5)) { alreadyAbsolute++; continue; }
 				const dup = this.memories.find((m) => m.scope === scope && similarity(m.text, text) >= 0.6);
 				if (dup) {
 					// 被再次提到：算一次复习，并用新说法更新
@@ -444,7 +461,7 @@ ${dialog}`;
 					added++;
 				}
 			}
-			const cores = (out.core ?? []).filter((item) => owners.has(Number(item.from)) || (turns.every((x) => x.isOwner) && owners.size > 0));
+			const cores = out.core.filter((item) => item && (owners.has(Number(item.from)) || (turns.every((x) => x.isOwner) && owners.size > 0)));
 			blocked += (out.core?.length ?? 0) - cores.length;
 			for (const item of cores) {
 				const text = String(item.text ?? "").trim();
@@ -452,10 +469,25 @@ ${dialog}`;
 					this.pending.push({ id: id(), cardId: card.id, text, from: chatKey, created: now() });
 				}
 			}
+			this.stats.lastExtraction = { time: now(), status: "success", turns: turns.length, candidates: out.memories.length, coreCandidates: out.core.length, added, reinforced, blocked, invalid, alreadyAbsolute, pending: cores.length };
 			this.save();
+			const current = this.buffers.get(chatKey);
+			this.setBuffer(chatKey, { ...current, turns: current.turns.slice(turns.length), retryAt: 0 });
 			if (added || reinforced || cores.length || blocked) this.log(`记忆整理（${chatKey}）：新记 ${added} 条，强化 ${reinforced} 条${cores.length ? `，${cores.length} 条绝对记忆候选待确认` : ""}${blocked ? `，拦下 ${blocked} 条可疑内容` : ""}`);
 		} catch (error) {
+			const retryAt = now() + MEMORY_RETRY_MS;
+			this.stats.lastExtraction = { time: now(), status: "failed", turns: turns.length, retryAt };
 			this.log(`记忆整理失败（${chatKey}）：${error.message}`);
+			const current = this.buffers.get(chatKey);
+			if (current) {
+				current.retryAt = retryAt;
+				try {
+					this.setBuffer(chatKey, current);
+					this.write("stats.json", this.stats);
+				} catch (writeError) {
+					this.log(`记忆整理状态写入失败（${chatKey}）：${writeError.message}`);
+				}
+			}
 		} finally {
 			this.extracting.delete(chatKey);
 		}

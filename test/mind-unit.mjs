@@ -57,6 +57,59 @@ mind.saveCards({ cards: [{ id: "a", name: "甲", identity: "你是甲", absolute
 check("锚定文本含绝对记忆", mind.anchor("private:1").includes("主人叫阿青"));
 check("限定范围的绝对记忆只在对应聊天出现", !mind.anchor("private:1").includes("只在群1") && mind.anchor("group:1").includes("只在群1"));
 
+mind.generateJson = async () => ({ value: { memories: [], core: [] }, tokens: 10 });
+mind.observe("private:1", { nickname: "小明", userId: 1, isOwner: true }, "你好", "你好");
+await mind.flush("private:1");
+check("空结果记录为模型没有返回记忆", mind.stats.lastExtraction.status === "success" && mind.stats.lastExtraction.candidates === 0 && mind.stats.lastExtraction.turns === 1);
+mind.generateJson = async () => ({ value: { memories: [{ text: "小明喜欢芒果", from: 1, userId: 1, about: "user", importance: 3 }], core: [] }, tokens: 20 });
+mind.observe("private:1", { nickname: "小明", userId: 1, isOwner: true }, "我喜欢芒果", "收到");
+await mind.flush("private:1");
+check("整理状态记录实际新增", mind.stats.lastExtraction.candidates === 1 && mind.stats.lastExtraction.added === 1 && mind.memories.some((x) => x.text.includes("芒果")));
+mind.generateJson = async () => { throw new Error("模拟失败"); };
+mind.observe("private:1", { nickname: "小明", userId: 1, isOwner: true }, "再聊", "好");
+await mind.flush("private:1");
+check("整理失败记录状态", mind.stats.lastExtraction.status === "failed");
+check("失败后对话仍在待整理队列", mind.listMemories().stats.buffered === 1);
+
+const sender = { nickname: "小明", userId: 1, isOwner: true };
+mind.observe("group:1", sender, "我常去游泳");
+let resolveExtraction;
+let groupPrompt = "";
+mind.generateJson = (_use, prompt) => {
+	groupPrompt = prompt;
+	return new Promise((resolve) => { resolveExtraction = resolve; });
+};
+const inFlight = mind.extract("group:1");
+mind.observe("group:1", sender, "我也学过滑冰");
+const duringExtraction = new Mind({ dataDir: dir, getConfig: () => config, log: () => {} });
+check("整理进行中重启仍能读到原批次和新消息", duringExtraction.listMemories().stats.buffered === 3);
+check("只有群友发言也能生成整理输入", groupPrompt.includes("我常去游泳") && !groupPrompt.includes("undefined"));
+resolveExtraction({ value: { memories: [], core: [] }, tokens: 1 });
+await inFlight;
+check("整理成功只消费本批次，期间收到的新消息仍待整理", mind.listMemories().stats.buffered === 2);
+
+let retriedPrompt = "";
+const restarted = new Mind({ dataDir: dir, getConfig: () => config, log: () => {}, generateJson: async (_use, prompt) => {
+	retriedPrompt = prompt;
+	return { value: { memories: [], core: [] }, tokens: 1 };
+} });
+check("重启后恢复失败的批次和未整理的新消息", restarted.listMemories().stats.buffered === 2);
+const realNow = Date.now;
+try {
+	restarted.flushIdle();
+	check("失败批次在重试间隔内不会再次调用", !retriedPrompt);
+	Date.now = () => realNow() + 65_000;
+	restarted.flushIdle();
+	await restarted.flush("private:1");
+	check("后台重试恢复原始对话，成功后从队列移除", retriedPrompt.includes("再聊") && restarted.listMemories().stats.buffered === 1);
+	Date.now = () => realNow() + 185_000;
+	restarted.flushIdle();
+	await restarted.flush("group:1");
+	check("恢复后无新消息也会整理闲置批次", retriedPrompt.includes("我也学过滑冰") && restarted.listMemories().stats.buffered === 0);
+} finally {
+	Date.now = realNow;
+}
+
 rmSync(dir, { recursive: true, force: true });
 console.log(fail ? `❌ ${fail} 项失败` : "✅ 全部通过");
 process.exit(fail ? 1 : 0);

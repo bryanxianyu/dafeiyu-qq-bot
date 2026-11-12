@@ -21,7 +21,7 @@ export function createMindClient(logger) {
 		}, 3000).unref();
 	}
 
-	async function call(path, body) {
+	async function call(path, body, timeoutMs = path === "flush" ? 90000 : path === "stickers/pick" ? 60000 : 5000) {
 		if (!url) return null;
 		try {
 			const res = await fetch(`${url}/internal/${path.includes("/") ? path : `mind/${path}`}`, {
@@ -29,7 +29,7 @@ export function createMindClient(logger) {
 				headers: { "Content-Type": "application/json", "X-Fish-Internal": token },
 				body: JSON.stringify(body),
 				// 整理记忆、网上找表情（搜索 + 看图）都要多等一会儿
-				signal: AbortSignal.timeout(path === "flush" ? 90000 : path === "stickers/pick" ? 60000 : 5000)
+				signal: AbortSignal.timeout(timeoutMs)
 			});
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			warned = false;
@@ -55,12 +55,12 @@ export function createMindClient(logger) {
 		async recall(chat, sender, text) {
 			return (await call("recall", { chat: chat.key, userId: sender.userId, text }))?.text ?? "";
 		},
-		/** 把还没整理的对话立刻整理成长期记忆（/重置 前用） */
+		/** 尝试立即整理一批对话（/重置前用） */
 		async flush(chat) {
 			await call("flush", { chat: chat.key });
 		},
 		observe(chat, sender, text, reply) {
-			call("observe", { chat: chat.key, sender, text, reply });
+			return call("observe", { chat: chat.key, sender, text, reply });
 		},
 		/** 人格卡列表 + 这个聊天当前用的卡：{ cards: [{id, name}], current } */
 		async cards(chat) {
@@ -73,6 +73,16 @@ export function createMindClient(logger) {
 		/** 表情包：收集（不等结果）、按关键词挑图、常用标签 */
 		collectSticker(chat, image, context) {
 			call("stickers/collect", { chat: chat.key, url: image.url, summary: image.summary, context });
+		},
+		/** 看私聊图片 / 表情；控制台用已选视觉模型识别，并复用识别结果收集表情。 */
+		async analyzeImage(chat, image, context = "", summary = image.summary ?? "") {
+			return await call("stickers/analyze", {
+				chat: chat.key,
+				base64: Buffer.from(image.data).toString("base64"),
+				mime: image.mime,
+				summary,
+				context
+			}, 90000);
 		},
 		async pickSticker(chat, query, web = false) {
 			return (await call("stickers/pick", { chat: chat.key, query, web }))?.sticker ?? null;

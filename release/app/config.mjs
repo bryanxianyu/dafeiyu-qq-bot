@@ -1,25 +1,36 @@
-// 配置模块：data/config.json ⇄ DSH profile 配置 + NapCat WebSocket 配置
+// 配置模块：data/config.json ⇄ DSH profile 配置
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+export const isWindows = process.platform === "win32";
+if (!isWindows && !process.env.FISH_RUNTIME_DIR) throw new Error("请通过 node macos/start.mjs 启动控制台");
+export const root = isWindows
+	? resolve(dirname(fileURLToPath(import.meta.url)), "..")
+	: resolve(process.env.FISH_RUNTIME_DIR);
 export const paths = {
 	root,
-	node: join(root, "runtime", "node.exe"),
-	dshBin: join(root, "runtime", "dsh", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
+	node: isWindows ? join(root, "runtime", "node.exe") : process.execPath,
+	dshBin: process.env.FISH_DSH_BIN ?? join(root, "runtime", "dsh", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"),
 	dshHome: join(root, "home"),
 	profileDir: join(root, "home", "profiles", "fish"),
 	dataDir: join(root, "data"),
 	configFile: join(root, "data", "config.json"),
 	extensionsDir: join(root, "data", "extensions"),
+	fishPatch: join(root, "data", "fish-console.patch.yml"),
 	napcatDir: join(root, "napcat")
 };
 
 export const DEFAULTS = {
 	apiKey: "",
-	model: "deepseek-v4-flash",
+	model: "deepseek-flash",
+	chatModel: "",
+	memoryModel: "",
+	visionModel: "",
+	chatReasoningEffort: "",
+	memoryReasoningEffort: "",
+	visionReasoningEffort: "",
 	owners: [],
 	allowUsers: [],
 	allowGroups: [],
@@ -29,7 +40,7 @@ export const DEFAULTS = {
 	groupInitiative: "mid",
 	groupCooldown: 60,
 	botQQ: "",
-	useBuiltinNapcat: true,
+	useBuiltinNapcat: isWindows,
 	onebotPort: 3001,
 	onebotUrl: "",
 	onebotToken: "",
@@ -65,7 +76,8 @@ export const DEFAULTS = {
 export function load() {
 	const saved = existsSync(paths.configFile) ? JSON.parse(readFileSync(paths.configFile, "utf8")) : {};
 	const config = { ...DEFAULTS, ...saved };
-	if (!config.onebotToken) config.onebotToken = randomBytes(16).toString("hex");
+	config.useBuiltinNapcat = isWindows && config.useBuiltinNapcat;
+	if (isWindows && !config.onebotToken) config.onebotToken = randomBytes(16).toString("hex");
 	return config;
 }
 
@@ -78,12 +90,30 @@ const numbers = (v) => (Array.isArray(v) ? v : String(v ?? "").split(/[,，\s]+/
 const strings = (v) => (Array.isArray(v) ? v : String(v ?? "").split(/[,，]/)).map((s) => String(s).trim()).filter(Boolean);
 const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
 
+export function parseModelRef(value) {
+	if (value === "") return null;
+	if (typeof value !== "string") throw new Error("模型选择无效");
+	const pair = JSON.parse(value);
+	if (!Array.isArray(pair) || pair.length !== 2 || pair.some((part) => typeof part !== "string" || !part.trim() || part.length > 300)) {
+		throw new Error("模型选择无效");
+	}
+	return { provider: pair[0], model: pair[1] };
+}
+
+export function chatSelection(config) {
+	const selection = parseModelRef(config.chatModel) ??
+		(config.apiKey ? { provider: "deepseek-official", model: config.model, reasoningEffort: "high" } : null);
+	return selection && config.chatReasoningEffort ? { ...selection, reasoningEffort: config.chatReasoningEffort } : selection;
+}
+
 /** 合并界面提交的改动（apiKey 留空表示不改），返回新配置。 */
 export function update(patch) {
 	const config = load();
 	for (const [k, v] of Object.entries(patch)) {
 		if (!(k in DEFAULTS)) continue;
 		if (k === "apiKey" && !String(v ?? "").trim()) continue;
+		if (["chatModel", "memoryModel", "visionModel"].includes(k)) parseModelRef(v);
+		if (["chatReasoningEffort", "memoryReasoningEffort", "visionReasoningEffort"].includes(k) && (typeof v !== "string" || v.length > 80 || (v && !/^[\w.-]+$/.test(v)))) throw new Error("思考等级无效");
 		config[k] = v;
 	}
 	config.apiKey = String(config.apiKey).trim();
@@ -114,7 +144,8 @@ export function update(patch) {
 	config.qzoneDailyMax = Math.round(clamp(config.qzoneDailyMax, 0, 10, 2));
 	config.onebotPort = clamp(config.onebotPort, 1, 65535, 3001);
 	config.botQQ = String(config.botQQ ?? "").replace(/\D/g, "");
-	config.useBuiltinNapcat = config.useBuiltinNapcat !== false && config.useBuiltinNapcat !== "false";
+	config.useBuiltinNapcat = isWindows && config.useBuiltinNapcat !== false && config.useBuiltinNapcat !== "false";
+	config.onebotToken = String(config.onebotToken ?? "").trim();
 	config.autoStart = config.autoStart !== false && config.autoStart !== "false";
 	config.memoryEnabled = config.memoryEnabled !== false && config.memoryEnabled !== "false";
 	config.memoryExtractEvery = Math.round(clamp(config.memoryExtractEvery, 1, 50, 6));
@@ -128,17 +159,29 @@ export function update(patch) {
 /** 还缺哪些必填项（空数组 = 可以启动）。 */
 export function missing(config = load()) {
 	const m = [];
-	if (!config.apiKey) m.push("DeepSeek API Key");
+	if (!isWindows && !existsSync(paths.dshBin)) m.push("DSH（运行 npm ci --prefix macos）");
 	if (config.owners.length === 0) m.push("主人 QQ 号");
 	if (!config.useBuiltinNapcat && !config.onebotUrl) m.push("OneBot 地址");
 	return m;
 }
 
 /** YAML 是 JSON 的超集，值统一用 JSON 写，省去转义烦恼。 */
-export function writeProfile(config = load()) {
+export function writeFishPatch(config = load()) {
+	const selection = chatSelection(config);
+	const desktopRows = [];
+	if (process.env.FISH_DSH_CREDENTIALS_PATH) {
+		desktopRows.push(
+			"- id: credentials",
+			"  config:",
+			`    path: ${JSON.stringify(process.env.FISH_DSH_CREDENTIALS_PATH)}`
+		);
+	}
 	const fish = {
-		onebotUrl: config.useBuiltinNapcat ? `ws://127.0.0.1:${config.onebotPort}` : config.onebotUrl,
+		onebotUrl: missing(config).length ? "" : config.useBuiltinNapcat ? `ws://127.0.0.1:${config.onebotPort}` : config.onebotUrl,
 		onebotToken: config.onebotToken,
+		chatProvider: selection?.provider ?? "",
+		chatModel: selection?.model ?? "",
+		chatReasoningEffort: config.chatReasoningEffort || selection?.reasoningEffort || "",
 		owners: config.owners,
 		allowUsers: config.allowUsers,
 		allowGroups: config.allowGroups,
@@ -164,107 +207,12 @@ export function writeProfile(config = load()) {
 	};
 	if (config.persona) fish.persona = config.persona;
 	const yaml = [
-		"# 自动生成：由控制台按 data/config.json 重写，请在控制台里修改",
-		"- id: agent-default-model",
-		"  name: \"@deepseek-ai/dsh-agent-default-model\"",
-		"  config:",
-		"    provider: deepseek-official",
-		`    model: ${JSON.stringify(config.model)}`,
-		"    reasoningEffort: high",
-		"",
+		"# 大肥鱼控制台生成的独立覆盖层；模型路由合并在 fish profile 的 cordis.patch.yml",
+		...desktopRows,
 		"- id: fish-qq",
 		"  config:",
-		...Object.entries(fish).map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`),
+		...Object.entries(fish).filter(([, value]) => value !== undefined).map(([k, v]) => `    ${k}: ${JSON.stringify(v)}`),
 		""
 	].join("\n");
-	writeFileSync(join(paths.profileDir, "cordis.patch.yml"), yaml);
-}
-
-// ---------------- NapCat ----------------
-
-/** 安装后的 NapCat.<版本>.Shell 目录（QQ.exe 和 NapCatWinBootMain.exe 所在处），没装返回 null。 */
-export function napcatShellDir() {
-	if (!existsSync(paths.napcatDir)) return null;
-	const dirs = readdirSync(paths.napcatDir, { withFileTypes: true })
-		.filter((e) => e.isDirectory() && /^NapCat\..*\.Shell$/.test(e.name))
-		.map((e) => join(paths.napcatDir, e.name))
-		.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
-	return dirs.at(-1) ?? null;
-}
-
-/** 找 NapCat 的程序目录（…\resources\app\napcat），可能有多个版本。 */
-export function napcatAppDirs(dir = paths.napcatDir, depth = 0) {
-	if (depth > 7 || !existsSync(dir)) return [];
-	const found = [];
-	for (const e of readdirSync(dir, { withFileTypes: true })) {
-		if (!e.isDirectory()) continue;
-		const p = join(dir, e.name);
-		if (e.name === "napcat" && existsSync(join(p, "napcat.mjs"))) found.push(p);
-		else if (!["node_modules", "static", "native", "worker", "config", "cache"].includes(e.name)) found.push(...napcatAppDirs(p, depth + 1));
-	}
-	return found;
-}
-
-export function writeNapcat(config = load()) {
-	if (!config.useBuiltinNapcat) return 0;
-	const server = {
-		name: "dafeiyu",
-		enable: true,
-		host: "127.0.0.1",
-		port: config.onebotPort,
-		messagePostFormat: "array",
-		reportSelfMessage: false,
-		token: config.onebotToken,
-		enableForcePushEvent: true,
-		debug: false,
-		heartInterval: 30000
-	};
-	const dirs = napcatAppDirs().map((d) => join(d, "config"));
-	for (const dir of dirs) {
-		mkdirSync(dir, { recursive: true });
-		// WebUI 默认监听所有网卡且口令很短：只允许本机访问；填了机器人号就自动登录
-		const webuiFile = join(dir, "webui.json");
-		if (existsSync(webuiFile)) {
-			try {
-				const webui = JSON.parse(readFileSync(webuiFile, "utf8"));
-				webui.host = "127.0.0.1";
-				webui.autoLoginAccount = config.botQQ ? String(config.botQQ) : "";
-				writeFileSync(webuiFile, JSON.stringify(webui, null, 4));
-			} catch {}
-		}
-		// onebot11.json 是新账号的默认配置；已登录过的账号有自己的 onebot11_<QQ号>.json，一并修正
-		const files = readdirSync(dir).filter((f) => /^onebot11(_\d+)?\.json$/.test(f));
-		if (!files.includes("onebot11.json")) files.push("onebot11.json");
-		for (const f of files) {
-			const p = join(dir, f);
-			let cfg = {};
-			try {
-				cfg = JSON.parse(readFileSync(p, "utf8"));
-			} catch {}
-			cfg.network ??= {};
-			for (const k of ["httpServers", "httpSseServers", "httpClients", "websocketServers", "websocketClients", "plugins"]) cfg.network[k] ??= [];
-			cfg.network.websocketServers = [...cfg.network.websocketServers.filter((s) => s.name !== "dafeiyu"), server];
-			cfg.musicSignUrl ??= "";
-			cfg.enableLocalFile2Url ??= false;
-			cfg.parseMultMsg ??= false;
-			writeFileSync(p, JSON.stringify(cfg, null, 2));
-		}
-	}
-	return dirs.length;
-}
-
-/** 最新的登录二维码图片路径。 */
-export function napcatQrcode() {
-	let best = null;
-	for (const d of napcatAppDirs()) {
-		const p = join(d, "cache", "qrcode.png");
-		if (existsSync(p) && (!best || statSync(p).mtimeMs > best.mtime)) best = { path: p, mtime: statSync(p).mtimeMs };
-	}
-	return best;
-}
-
-export function applyAll(config = load()) {
-	save(config); // 落盘自动生成的 token
-	writeProfile(config);
-	return writeNapcat(config);
+	writeFileSync(paths.fishPatch, yaml, { mode: 0o600 });
 }

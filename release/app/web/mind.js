@@ -161,6 +161,11 @@
       ["累计想起", `${s.recalls} 次`]
     ].map(([k, v]) => `<div class="tile"><small>${k}</small><b>${v}</b></div>`).join("");
 
+    const last = s.lastExtraction;
+    $("#memoryExtractionStatus").textContent = !last ? "历史整理没有记录详细结果；下次整理后会显示。"
+      : last.status === "failed" ? `最近整理失败（${new Date(last.time).toLocaleString()}）。${last.retryAt ? "这批对话已保留，稍后自动重试。" : "请查看日志。"}`
+      : `最近整理：${new Date(last.time).toLocaleString()}，${last.turns} 轮；模型返回 ${last.candidates} 条长期记忆、${last.coreCandidates} 条核心候选；新增 ${last.added} 条，强化 ${last.reinforced} 条，过滤 ${last.blocked + last.invalid + last.alreadyAbsolute} 条。`;
+
     // 待确认
     $("#pendingPanel").classList.toggle("hidden", mem.pending.length === 0);
     const pl = $("#pendingList");

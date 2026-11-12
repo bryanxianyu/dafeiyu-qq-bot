@@ -87,8 +87,8 @@ static class Setup
         Directory.CreateDirectory(dir);
 
         progress(5, "清理旧版本程序文件……");
-        // 程序文件整体替换；data（配置/记忆/会话）、home 里的会话、napcat 里已装好的 QQ 都保留
-        foreach (var sub in new[] { "app", @"runtime\dsh", @"home\profiles\fish\node_modules", "scripts" })
+        // 只替换随包发布的程序文件；保留 DSH profile 和用户安装的其他插件。
+        foreach (var sub in new[] { "app", @"runtime\dsh", @"home\profiles\fish\node_modules\dsh-fish", "scripts" })
         {
             var p = Path.Combine(dir, sub);
             if (Directory.Exists(p)) Directory.Delete(p, true);
@@ -107,7 +107,8 @@ static class Setup
                 var rel = e.FullName.Replace('/', '\\');
                 var target = Path.Combine(dir, rel);
                 // 用户数据：已存在就不覆盖
-                if (rel.StartsWith("data\\", StringComparison.OrdinalIgnoreCase) && File.Exists(target)) continue;
+                if (File.Exists(target) && (rel.StartsWith("data\\", StringComparison.OrdinalIgnoreCase) ||
+                    rel.Equals(@"home\profiles\fish\package.json", StringComparison.OrdinalIgnoreCase))) continue;
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
                 e.ExtractToFile(target, true);
                 if (i % 50 == 0) progress(5 + (int)(85.0 * i / entries.Count), "正在安装：" + rel);

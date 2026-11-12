@@ -41,7 +41,10 @@ export class OneBot {
 			this.handle(data);
 		});
 		ws.addEventListener("close", () => {
-			for (const { reject } of this.pending.values()) reject(new Error("OneBot 连接断开"));
+			for (const { reject, timer } of this.pending.values()) {
+				clearTimeout(timer);
+				reject(new Error("OneBot 连接断开"));
+			}
 			this.pending.clear();
 			if (this.closed) return;
 			this.logger.warn(`QQ 连接断开，${this.reconnectMs / 1000} 秒后重连（确认 NapCat 已登录并开启了 WebSocket 服务端）`);
@@ -52,7 +55,8 @@ export class OneBot {
 
 	handle(data) {
 		if (data.echo !== undefined && this.pending.has(data.echo)) {
-			const { resolve, reject } = this.pending.get(data.echo);
+			const { resolve, reject, timer } = this.pending.get(data.echo);
+			clearTimeout(timer);
 			this.pending.delete(data.echo);
 			if (data.status === "failed") reject(new Error(data.wording || data.message || `retcode ${data.retcode}`));
 			else resolve(data.data);
@@ -71,11 +75,11 @@ export class OneBot {
 		if (ws === undefined || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("QQ 未连接"));
 		const echo = `fish-${++this.seq}`;
 		return new Promise((resolve, reject) => {
-			this.pending.set(echo, { resolve, reject });
-			ws.send(JSON.stringify({ action, params, echo }));
-			setTimeout(() => {
+			const timer = setTimeout(() => {
 				if (this.pending.delete(echo)) reject(new Error(`${action} 超时`));
 			}, timeoutMs);
+			this.pending.set(echo, { resolve, reject, timer });
+			ws.send(JSON.stringify({ action, params, echo }));
 		});
 	}
 
@@ -118,6 +122,8 @@ export async function renderMessage(message, selfId, lookup = {}) {
 	let mentioned = false;
 	const targets = [];
 	const stickers = [];
+	const images = [];
+	const files = [];
 	let quote = "";
 	let text = "";
 	for (const seg of toSegments(message)) {
@@ -139,17 +145,28 @@ export async function renderMessage(message, selfId, lookup = {}) {
 			// 商城表情：图在 QQ 的表情 CDN 上，名字（summary）就是现成的标签
 			const emojiId = String(data.emoji_id ?? "");
 			const url = data.url || (/^[0-9a-f]{32}$/i.test(emojiId) ? `https://gxh.vip.qq.com/club/item/parcel/item/${emojiId.slice(0, 2)}/${emojiId}/raw300.gif` : "");
-			if (url) stickers.push({ url, summary: data.summary ?? "" });
+			if (url) {
+				stickers.push({ url, summary: data.summary ?? "" });
+				images.push({ segment: seg, kind: "sticker", url, summary: data.summary ?? "" });
+			}
 		} else if (seg.type === "face") text += data.summary || PLACEHOLDER.face;
 		else if (seg.type === "image") {
 			// QQ 把收藏的表情标成 sub_type=1 或 summary=[动画表情]；普通照片不收
 			const isSticker = Number(data.sub_type) === 1 || /动画表情/.test(data.summary ?? "");
 			text += isSticker ? "[表情包]" : data.summary && data.summary !== "[图片]" ? data.summary : "[图片]";
-			if (isSticker && data.url) stickers.push({ url: data.url, summary: "" });
+			const image = { segment: seg, kind: isSticker ? "sticker" : "image", url: data.url, summary: data.summary ?? "" };
+			images.push(image);
+			if (isSticker && data.url) stickers.push({ url: data.url, summary: data.summary ?? "" });
+		} else if (seg.type === "file") {
+			const fileId = data.file_id ?? data.file;
+			const name = String(data.name ?? data.file_name ?? (data.file && !String(data.file).startsWith("base64://") ? data.file : "QQ 文件"))
+				.replace(/[\\/\0-\x1f\x7f]/g, "_").slice(0, 120) || "QQ 文件";
+			files.push({ segment: seg, fileId, name, size: Number(data.size ?? data.file_size) || 0 });
+			text += `[文件：${name}]`;
 		} else if (PLACEHOLDER[seg.type]) text += PLACEHOLDER[seg.type];
 	}
 	text = text.replace(/[ \t]+/g, " ").trim();
-	return { text, quote, mentioned, targets, stickers };
+	return { text, quote, mentioned, targets, stickers, images, files };
 }
 
 /** 兼容旧接口：只要纯文本 + 是否 @ 了机器人 */

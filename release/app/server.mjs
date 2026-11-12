@@ -1,19 +1,20 @@
 // 大肥鱼控制台：本地网页 GUI + 进程管理（NapCat、大肥鱼）。只监听 127.0.0.1。
-//   runtime\node.exe app\server.mjs [--no-open]
-import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
-import { DEFAULTS, applyAll, load, missing, napcatQrcode, napcatShellDir, paths, update } from "./config.mjs";
+import { setTimeout as delay } from "node:timers/promises";
+import { DEFAULTS, isWindows, load, missing, parseModelRef, paths, save, update, writeFishPatch } from "./config.mjs";
+import { startDesktopModelSync } from "./dsh-desktop-models.mjs";
 /** 只有控制台自己用的设置：改了不用重启大肥鱼 */
-const CONSOLE_ONLY = new Set(["autoStart", "stickerReview", "stickerDailyLabel", "stickerMax", "stickerWebDaily", "memoryEnabled", "memoryExtractEvery", "memoryBudget", "memoryTopK", "memoryForgetBelow"]);
+const CONSOLE_ONLY = new Set(["autoStart", "memoryModel", "visionModel", "memoryReasoningEffort", "visionReasoningEffort", "stickerReview", "stickerDailyLabel", "stickerMax", "stickerWebDaily", "memoryEnabled", "memoryExtractEvery", "memoryBudget", "memoryTopK", "memoryForgetBelow"]);
 import { Mind } from "./mind.mjs";
-import { Stickers } from "./stickers.mjs";
+import { Stickers, sniffImage } from "./stickers.mjs";
 
 const LAUNCHER_HINT = process.env.FISH_LAUNCHER_PID ? "（在右下角托盘运行）" : "（这个窗口别关，关掉大肥鱼就下线了）";
 const VERSION = JSON.parse(readFileSync(join(paths.profileDir, "node_modules", "dsh-fish", "package.json"), "utf8")).version;
-const WEB = join(paths.root, "app", "web");
+const WEB = join(import.meta.dirname, "web");
 const TOKEN = randomBytes(16).toString("hex");
 /** 插件 → 控制台的内部接口口令（只通过环境变量传给大肥鱼进程） */
 const INTERNAL = randomBytes(16).toString("hex");
@@ -77,10 +78,6 @@ function pipeLines(stream, source) {
 	stream.on("end", () => rest.length && pushLog(source, decodeSmart(rest)));
 }
 
-const killTree = (pid) => new Promise((r) => execFile("taskkill", ["/PID", String(pid), "/T", "/F"], () => r()));
-const psQuote = (s) => `'${s.replace(/'/g, "''")}'`;
-const runPs = (command) => new Promise((r) => execFile("powershell.exe", ["-NoProfile", "-Command", command], { windowsHide: true }, (err, out) => r(String(out ?? "").trim())));
-
 // ---------------- 大肥鱼进程 ----------------
 const fish = { proc: null, want: false, status: "stopped", connected: false, crashes: [], lastError: "" };
 
@@ -105,39 +102,94 @@ function watchFishLine(line) {
 	if (/Error|error:|呛水/.test(line)) fish.lastError = line.slice(0, 300);
 }
 
+const pendingModelRequests = new Map();
+
+function modelRpc(operation, input, timeout = 15000) {
+	const proc = fish.proc;
+	if (!proc?.connected) return Promise.reject(new Error("DSH 尚未启动"));
+	return new Promise((resolve, reject) => {
+		const id = randomUUID();
+		const timer = setTimeout(() => {
+			if (proc.connected) proc.send({ fishModelCancel: id }, () => {});
+			finish(new Error("DSH 模型服务响应超时"));
+		}, timeout);
+		function finish(error, result) {
+			if (!pendingModelRequests.delete(id)) return;
+			clearTimeout(timer);
+			if (error) reject(error);
+			else resolve(result);
+		}
+		pendingModelRequests.set(id, { proc, finish });
+		proc.send({ fishModelRequest: id, operation, input }, (error) => {
+			if (error) finish(error);
+		});
+	});
+}
+
+async function generateJson(use, prompt, { maxTokens, image } = {}) {
+	const config = load();
+	const effort = config[use === "memoryModel" ? "memoryReasoningEffort" : "visionReasoningEffort"];
+	const { text, tokens } = await modelRpc("generate", {
+		selection: parseModelRef(config[use]), effort: effort || "follow", prompt, maxTokens,
+		image: image && { mime: image.mime, base64: image.data.toString("base64") }
+	}, 65000);
+	const raw = text.trim().replace(/^```(?:json)?\s*([\s\S]+?)\s*```$/i, "$1");
+	let value;
+	try { value = JSON.parse(raw); } catch { throw new Error("模型未返回有效 JSON"); }
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("模型未返回 JSON 对象");
+	return { value, tokens };
+}
+
 function startFish() {
 	if (fish.proc) return;
 	const config = load();
-	const need = missing(config);
+	const need = missing(config).filter((item) => item.startsWith("DSH"));
 	if (need.length) {
 		sys(`还不能启动大肥鱼，缺少：${need.join("、")}`);
 		return;
 	}
 	applyAll(config);
+	writeFishPatch(config);
 	fish.want = true;
 	fish.status = "starting";
 	fish.connected = false;
 	fish.lastError = "";
 	sys("启动大肥鱼");
-	const proc = spawn(paths.node, [paths.dshBin, "--profile", "fish"], {
+	const proc = spawn(paths.node, [paths.dshBin, "--profile", "fish", "--patch", paths.fishPatch], {
 		cwd: paths.dataDir,
 		windowsHide: true,
+		detached: !isWindows,
+		stdio: ["ignore", "pipe", "pipe", "ipc"],
 		env: {
 			...process.env,
 			DSH_HOME: paths.dshHome,
 			DSH_TELEMETRY_DISABLED: "1",
-			DEEPSEEK_API_KEY: config.apiKey,
+			...(config.apiKey && !process.env.DEEPSEEK_API_KEY ? { DEEPSEEK_API_KEY: config.apiKey } : {}),
 			FISH_MIND_URL: `http://127.0.0.1:${port}`,
 			FISH_MIND_TOKEN: INTERNAL,
 			FISH_PARENT_PID: String(process.pid),
-			Path: `${join(paths.root, "runtime")};${process.env.Path ?? process.env.PATH ?? ""}`
+			...(isWindows ? { Path: `${join(paths.root, "runtime")};${process.env.Path ?? process.env.PATH ?? ""}` } : {})
 		}
 	});
 	fish.proc = proc;
+	proc.on("message", (message) => {
+		const pending = pendingModelRequests.get(message?.fishModelResult);
+		if (pending?.proc === proc) pending.finish(message.error ? new Error(message.error) : null, message.result);
+	});
+	proc.once("disconnect", () => {
+		for (const pending of pendingModelRequests.values()) {
+			if (pending.proc === proc) pending.finish(new Error("DSH 模型服务已断开"));
+		}
+	});
 	pipeLines(proc.stdout, "fish");
 	pipeLines(proc.stderr, "fish");
 	proc.on("spawn", () => (fish.status = "running"));
-	proc.on("exit", (code) => {
+	proc.on("error", (e) => {
+		fish.lastError = e.message;
+		sys(`大肥鱼启动失败：${e.message}`);
+	});
+	proc.on("close", (code) => {
+		if (fish.proc !== proc) return;
 		fish.proc = null;
 		fish.connected = false;
 		fish.status = "stopped";
@@ -155,19 +207,42 @@ function startFish() {
 	});
 }
 
+async function killTree(pid) {
+	if (!pid) return;
+	if (windows) return windows.killTree(pid);
+	try {
+		process.kill(-pid, "SIGTERM");
+		for (let i = 0; i < 20; i++) {
+			await delay(100);
+			process.kill(-pid, 0);
+		}
+		process.kill(-pid, "SIGKILL");
+	} catch (e) {
+		if (e.code !== "ESRCH") throw e;
+	}
+}
+
 async function stopFish() {
 	fish.want = false;
 	const proc = fish.proc;
 	if (proc) {
 		sys("停止大肥鱼");
-		// 等进程真正退出，否则紧接着的 startFish 会以为它还在
-		const exited = new Promise((r) => {
-			proc.once("exit", r);
-			setTimeout(r, 8000);
-		});
 		await killTree(proc.pid);
-		await exited;
-		fish.proc = null;
+		if (fish.proc === proc) {
+			let timer;
+			await new Promise((resolve) => {
+				const onClose = () => {
+					clearTimeout(timer);
+					resolve();
+				};
+				proc.once("close", onClose);
+				timer = setTimeout(() => {
+					proc.removeListener("close", onClose);
+					resolve();
+				}, 8000);
+			});
+		}
+		if (fish.proc === proc) throw new Error("大肥鱼进程未退出");
 	}
 	fish.status = "stopped";
 	fish.connected = false;
@@ -176,78 +251,15 @@ async function stopFish() {
 // ---------------- NapCat ----------------
 const napcat = { proc: null, status: "stopped", installing: false, login: null, external: false };
 
-async function napcatRunningExternally() {
-	const out = await runPs(`@(Get-Process NapCatWinBootMain,QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like (${psQuote(paths.napcatDir)} + '\\*') }).Count`);
-	return Number(out) > 0;
-}
+const windows = isWindows ? await import("./napcat-windows.mjs") : null;
+const { startNapcat, stopNapcat, installNapcat, napcatRunningExternally } =
+	windows?.createNapcatManager({ napcat, pipeLines, sys, applyAll }) ?? {};
+const napcatQrcode = () => windows?.napcatQrcode();
+const napcatShellDir = () => windows?.napcatShellDir();
 
-async function installNapcat() {
-	if (napcatShellDir() || napcat.installing) return;
-	napcat.installing = true;
-	napcat.status = "installing";
-	sys("首次运行：安装 NapCat（从腾讯官方下载 QQ，约 200MB，请耐心等待）");
-	await new Promise((done) => {
-		const proc = spawn(join(paths.napcatDir, "NapCatInstaller.exe"), [], { cwd: paths.napcatDir, windowsHide: true });
-		pipeLines(proc.stdout, "napcat");
-		pipeLines(proc.stderr, "napcat");
-		proc.on("exit", done);
-		proc.on("error", (e) => {
-			sys(`NapCat 安装器启动失败：${e.message}`);
-			done();
-		});
-	});
-	// 安装器留下的下载文件（QQ 安装包约 300MB）用完即删
-	for (const f of ["QQ.exe", "NapCat.Shell.zip"]) rmSync(join(paths.napcatDir, f), { force: true });
-	const shell = napcatShellDir();
-	if (shell && !existsSync(join(shell, "NapCatWinBootMain.exe"))) cpSync(join(paths.napcatDir, "bootmain"), shell, { recursive: true });
-	napcat.installing = false;
-	napcat.status = "stopped";
-	sys(shell ? "NapCat 安装完成" : "NapCat 安装失败：检查网络后在「运行状态」页点「安装 NapCat」重试");
-}
-
-async function startNapcat() {
-	const config = load();
-	if (!config.useBuiltinNapcat || napcat.proc || napcat.installing) return;
-	if (!napcatShellDir()) await installNapcat();
-	const shell = napcatShellDir();
-	if (!shell) return;
-	if (await napcatRunningExternally()) {
-		napcat.external = true;
-		napcat.status = "running";
-		sys("NapCat 已经在运行（由之前的窗口启动）");
-		return;
-	}
-	applyAll(config);
-	sys(config.botQQ ? `启动 NapCat（自动登录 ${config.botQQ}）` : "启动 NapCat（需要扫码登录）");
-	const proc = spawn(join(shell, "NapCatWinBootMain.exe"), config.botQQ ? [config.botQQ] : [], { cwd: shell, windowsHide: true });
-	napcat.proc = proc;
-	napcat.startedAt = Date.now();
-	napcat.loginError = "";
-	napcat.external = false;
-	napcat.status = "running";
-	pipeLines(proc.stdout, "napcat");
-	pipeLines(proc.stderr, "napcat");
-	proc.on("exit", (code) => {
-		if (napcat.proc === proc) {
-			napcat.proc = null;
-			// 启动器拉起 QQ 后自己可能先退出，QQ 进程还在就仍算运行中
-			napcatRunningExternally().then((alive) => {
-				napcat.external = alive;
-				napcat.status = alive ? "running" : "stopped";
-				if (!alive) sys(`NapCat 退出了（退出码 ${code}）`);
-			});
-		}
-	});
-}
-
-async function stopNapcat() {
-	sys("停止 NapCat");
-	if (napcat.proc) await killTree(napcat.proc.pid);
-	napcat.proc = null;
-	await runPs(`Get-Process NapCatWinBootMain,QQ -ErrorAction SilentlyContinue | Where-Object { $_.Path -like (${psQuote(paths.napcatDir)} + '\\*') } | Stop-Process -Force`);
-	napcat.status = "stopped";
-	napcat.external = false;
-	napcat.login = null;
+function applyAll(config) {
+	save(config);
+	windows?.writeNapcat(config);
 }
 
 /** 通过 OneBot 查询机器人登录状态。 */
@@ -275,7 +287,7 @@ function pollLogin() {
 	};
 	ws.onerror = () => (napcat.login = null);
 }
-setInterval(pollLogin, 4000);
+if (windows) setInterval(pollLogin, 4000);
 
 // ---------------- 扩展 ----------------
 const readJson = (p, d) => {
@@ -309,7 +321,7 @@ function listExtensions() {
 }
 
 // ---------------- 心智（人格卡 + 记忆） ----------------
-const mind = new Mind({ dataDir: paths.dataDir, getConfig: load, log: sys });
+const mind = new Mind({ dataDir: paths.dataDir, getConfig: load, generateJson, log: sys });
 
 function mindApi(p, method, body) {
 	if (p === "/api/mind/cards") return method === "POST" ? mind.saveCards(body) : mind.cards;
@@ -334,7 +346,7 @@ function mindApi(p, method, body) {
 }
 
 // ---------------- 表情包 ----------------
-const stickers = new Stickers({ dataDir: paths.dataDir, getConfig: load, log: sys });
+const stickers = new Stickers({ dataDir: paths.dataDir, getConfig: load, generateJson, log: sys });
 
 async function stickerApi(p, method, body) {
 	if (p === "/api/stickers") return stickers.list();
@@ -359,9 +371,10 @@ function state() {
 	const qr = napcatQrcode();
 	return {
 		version: VERSION,
-		config: { ...rest, apiKeySet: Boolean(apiKey), apiKeyTail: apiKey ? apiKey.slice(-4) : "" },
+		config: { ...rest, apiKeySet: Boolean(apiKey), apiKeyTail: apiKey ? apiKey.slice(-4) : "", onebotTokenSet: Boolean(onebotToken) },
 		missing: missing(config),
-		pathWarning: /[^\x00-\x7F]| /.test(paths.root) ? paths.root : "",
+		platform: process.platform,
+		pathWarning: isWindows && /[^\x00-\x7F]| /.test(paths.root) ? paths.root : "",
 		fish: { status: fish.status, connected: fish.connected, lastError: fish.lastError },
 		napcat: {
 			enabled: config.useBuiltinNapcat,
@@ -388,17 +401,20 @@ const send = (res, code, body, type = "application/json; charset=utf-8") => {
 	res.writeHead(code, { "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
 	res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 };
-const readBody = (req) => new Promise((r) => {
-	let s = "";
-	req.on("data", (c) => (s += c));
-	req.on("end", () => {
-		try {
-			r(s ? JSON.parse(s) : {});
-		} catch {
-			r({});
-		}
-	});
-});
+async function readBody(req, maxBytes = 16 * 1024 * 1024) {
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += chunk.length;
+		if (size > maxBytes) throw Object.assign(new Error("请求内容超过大小上限"), { statusCode: 413 });
+		chunks.push(chunk);
+	}
+	try {
+		return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+	} catch {
+		return {};
+	}
+}
 /** 只在目录内取文件，防路径穿越。 */
 function safeFile(base, rel) {
 	const p = resolve(base, normalize(rel).replace(/^([/\\])+/, ""));
@@ -434,7 +450,21 @@ async function handle(req, res) {
 	}
 	if (p.startsWith("/internal/stickers/") && req.method === "POST") {
 		if (req.headers["x-fish-internal"] !== INTERNAL) return send(res, 401, { error: "unauthorized" });
-		const b = await readBody(req);
+		const b = await readBody(req, 12 * 1024 * 1024);
+		if (p === "/internal/stickers/analyze") {
+			if (typeof b.base64 !== "string" || b.base64.length > 11 * 1024 * 1024 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(b.base64)) {
+				return send(res, 400, { error: "图片数据无效或超过大小上限" });
+			}
+			const image = Buffer.from(b.base64, "base64");
+			const type = sniffImage(image);
+			if (!type || image.length > 8 * 1024 * 1024 || image.toString("base64") !== b.base64) return send(res, 400, { error: "只支持 8MB 以内的 PNG/JPEG/GIF/WebP 图片" });
+			const result = await stickers.analyzeIncoming(image, {
+				chat: String(b.chat ?? "").slice(0, 100),
+				context: String(b.context ?? "").slice(0, 500),
+				summary: String(b.summary ?? "").slice(0, 120)
+			});
+			return send(res, 200, result);
+		}
 		if (p === "/internal/stickers/collect") {
 			// 看图要几秒，不让大肥鱼等
 			stickers.collect(b).then((r) => r.skipped && !["off", "busy", "daily limit", "blocked", "not a sticker"].includes(r.skipped) && sys(`表情包收集跳过：${r.skipped}`)).catch((e) => sys(`表情包收集失败：${e.message}`));
@@ -481,6 +511,7 @@ async function handle(req, res) {
 	}
 	// 托盘启动器的扫码登录窗口（用启动器的管理令牌，不经过浏览器）
 	if (p.startsWith("/api/launcher/")) {
+		if (!windows) return send(res, 404, { error: "not found" });
 		if (!ADMIN || req.headers["x-fish-admin"] !== ADMIN) return send(res, 401, { error: "unauthorized" });
 		const qr = napcatQrcode();
 		// 只认这次启动 NapCat 之后生成的二维码，旧文件留在磁盘上不算
@@ -513,6 +544,13 @@ async function handle(req, res) {
 	const ok = () => send(res, 200, state());
 
 	if (p === "/api/state") return ok();
+	if (p === "/api/models" && req.method === "GET") {
+		try {
+			return send(res, 200, await modelRpc("catalog"));
+		} catch (error) {
+			return send(res, 503, { error: error.message });
+		}
+	}
 	if (p === "/api/logs") {
 		const after = Number(url.searchParams.get("after")) || 0;
 		const source = logs[url.searchParams.get("source")] ? url.searchParams.get("source") : "fish";
@@ -520,7 +558,10 @@ async function handle(req, res) {
 	}
 	if (p === "/api/config" && req.method === "POST") {
 		const before = load();
-		const config = update(body);
+		let config;
+		try { config = update(body); } catch (error) {
+			return send(res, 400, { error: error.message });
+		}
 		applyAll(config);
 		// 只有大肥鱼（插件）自己要读的设置变了才重启它；表情库上限、记忆参数这类控制台自己用的，改了立即生效
 		const changed = Object.keys(DEFAULTS).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(config[k]));
@@ -530,11 +571,13 @@ async function handle(req, res) {
 		if (fish.proc) {
 			if (needRestart) {
 				await stopFish();
+				if (config.autoStart && config.useBuiltinNapcat && !missing(config).length &&
+					(!before.useBuiltinNapcat || missing(before).length)) await startNapcat();
 				startFish();
 				restarted = true;
 			}
-		} else if (config.autoStart && missing(config).length === 0 && fish.status !== "crashed") {
-			if (config.useBuiltinNapcat) await startNapcat();
+		} else if (config.autoStart && fish.status !== "crashed") {
+			if (!missing(config).length && config.useBuiltinNapcat) await startNapcat();
 			startFish();
 		}
 		if (napcat.status === "running" && before.botQQ !== config.botQQ) sys("机器人 QQ 改了：重启 NapCat 后生效");
@@ -557,15 +600,16 @@ async function handle(req, res) {
 		},
 		"/api/napcat/start": startNapcat,
 		"/api/napcat/stop": stopNapcat,
-		"/api/napcat/restart": async () => {
+		"/api/napcat/restart": windows && (async () => {
 			await stopNapcat();
 			await startNapcat();
-		},
+		}),
 		"/api/napcat/install": installNapcat,
 		"/api/open-folder": async () => {
 			const target = { extensions: paths.extensionsDir, data: paths.dataDir, root: paths.root }[body.which] ?? paths.root;
 			mkdirSync(target, { recursive: true });
-			spawn("explorer.exe", [target], { detached: true, stdio: "ignore" }).unref();
+			if (windows) windows.openFolder(target);
+			else openMac(target);
 		}
 	};
 	if (actions[p] && req.method === "POST") {
@@ -609,7 +653,18 @@ async function handle(req, res) {
 }
 
 // ---------------- 启动 ----------------
-const openBrowser = () => !NO_OPEN && spawn("cmd.exe", ["/c", "start", "", `http://127.0.0.1:${port}/`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+function openMac(target) {
+	const proc = spawn("/usr/bin/open", [target], { detached: true, stdio: "ignore" });
+	proc.on("error", (e) => sys(`打开失败：${e.message}`));
+	proc.unref();
+}
+
+function openBrowser() {
+	if (NO_OPEN) return;
+	const url = `http://127.0.0.1:${port}/`;
+	if (windows) windows.openBrowser(url);
+	else openMac(url);
+}
 
 async function alreadyRunning(p) {
 	try {
@@ -622,7 +677,7 @@ async function alreadyRunning(p) {
 
 function listen(p) {
 	return new Promise((ok, fail) => {
-		const server = createServer((req, res) => handle(req, res).catch((e) => send(res, 500, { error: e.message })));
+		const server = createServer((req, res) => handle(req, res).catch((e) => send(res, e.statusCode ?? 500, { error: e.message })));
 		server.once("error", fail);
 		server.listen(p, "127.0.0.1", () => ok(server));
 	});
@@ -637,7 +692,8 @@ async function main() {
 			if (e.isDirectory() && !existsSync(dest)) cpSync(join(templates, e.name), dest, { recursive: true });
 		}
 	}
-	for (; port < (FIXED_PORT ? FIXED_PORT + 1 : 5160); port++) {
+	const portLimit = FIXED_PORT ? FIXED_PORT + 1 : 5160;
+	for (; port < portLimit; port++) {
 		if (!FIXED_PORT && (await alreadyRunning(port))) {
 			console.log(`控制台已经在运行，打开 http://127.0.0.1:${port}/`);
 			openBrowser();
@@ -647,8 +703,12 @@ async function main() {
 		try {
 			await listen(port);
 			break;
-		} catch {}
+		} catch (e) {
+			if (e.code !== "EADDRINUSE") throw e;
+		}
 	}
+	if (port === portLimit) throw new Error("没有可用的控制台端口");
+	startDesktopModelSync(paths, writeFishPatch, sys);
 	sys(`大肥鱼控制台 v${VERSION} 已启动：http://127.0.0.1:${port}/  ${LAUNCHER_HINT}`);
 	openBrowser();
 
@@ -658,10 +718,11 @@ async function main() {
 		napcat.status = "running";
 		napcat.external = true;
 	}
-	if (config.autoStart && missing(config).length === 0) {
-		if (config.useBuiltinNapcat) await startNapcat();
+	if (config.autoStart) {
+		if (!missing(config).length && config.useBuiltinNapcat) await startNapcat();
 		startFish();
-	} else if (missing(config).length) {
+	}
+	if (missing(config).length) {
 		sys(`请在浏览器里完成设置：还缺 ${missing(config).join("、")}`);
 	}
 }

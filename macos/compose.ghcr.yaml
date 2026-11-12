@@ -1,0 +1,4 @@
+# Docker Hub 不可用时使用 NapCat 官方 GHCR 镜像。
+services:
+  napcat:
+    image: ghcr.io/napneko/nodenapcat@sha256:43e600211bc1ab273e9b2fc68776359d6cfbf03f99ba0f7cf52f3c99add51316

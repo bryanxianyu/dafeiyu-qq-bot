@@ -36,7 +36,7 @@ log("路径穿越:", (await fetch(base + "/ext/persona-template/..%2f..%2fconfig
 let s = await api("/api/state");
 log("首次状态 missing =", s.missing, "extensions =", (await api("/api/extensions")).map((e) => `${e.id}:${e.enabled}`));
 
-const mock = spawn(process.execPath, [join(import.meta.dirname, "mock-onebot.mjs"), "3901"], { env: { ...process.env, MOCK_GUI: "1" } });
+const mock = spawn(process.execPath, [join(import.meta.dirname, "../../test/mock-onebot.mjs"), "3901"], { env: { ...process.env, MOCK_GUI: "1" } });
 let mockOut = "";
 mock.stdout.on("data", (d) => (mockOut += d));
 

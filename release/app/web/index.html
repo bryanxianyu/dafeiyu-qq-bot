@@ -117,6 +117,7 @@
   <section id="tab-memory" class="tab">
     <div class="page-head"><div><h1>记忆</h1><p class="lead">它会把聊天里的要紧事记下来，久了不提就慢慢忘，常被想起就记得更牢——像人一样。</p></div></div>
     <div class="tiles" id="memTiles"></div>
+    <p class="hint" id="memoryExtractionStatus"></p>
 
     <div class="panel hidden attention" id="pendingPanel">
       <h2>它想永远记住这些，你同意吗？</h2>
@@ -286,15 +287,26 @@
 
   <!-- 账号与连接 -->
   <section id="tab-basic" class="tab">
-    <div class="page-head"><div><h1>账号与连接</h1><p class="lead">让它能思考（DeepSeek）、知道谁是主人、登上哪个 QQ。</p></div></div>
+    <div class="page-head"><div><h1>账号与连接</h1><p class="lead">选择 DSH 模型，配置主人和 QQ 连接。</p></div></div>
     <form class="panel form" data-form>
-      <h3 class="first">🔑 DeepSeek</h3>
-      <label>API Key <em>必填</em>
-        <input name="apiKey" type="password" autocomplete="off">
-        <span class="hint">在 <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> 创建，账户里要有余额。</span>
-      </label>
-      <label>模型
-        <select name="model"><option value="deepseek-v4-flash">deepseek-v4-flash（便宜又快，推荐）</option><option value="deepseek-v4-pro">deepseek-v4-pro（更聪明，更贵）</option></select>
+      <h3 class="first">DSH 模型</h3>
+      <p class="hint">大肥鱼从 DSH fish profile 读取模型，也会同步桌面版 DSH 的模型路由。</p>
+      <div class="grid2">
+        <label>QQ 聊天<select name="chatModel"><option value="">使用默认模型</option></select></label>
+        <label>记忆整理<select name="memoryModel"><option value="">跟随聊天</option></select></label>
+        <label>表情识别<select name="visionModel"><option value="">跟随聊天</option></select></label>
+      </div>
+      <div class="grid2">
+        <label>聊天思考等级<select name="chatReasoningEffort"><option value="">模型默认</option></select></label>
+        <label>记忆思考等级<select name="memoryReasoningEffort"><option value="">跟随聊天</option></select></label>
+        <label>看图思考等级<select name="visionReasoningEffort"><option value="">跟随聊天</option></select></label>
+      </div>
+      <p class="hint">跟随聊天使用聊天的思考等级；如果 DSH 未提供聊天模型的默认等级，辅助模型使用各自的默认等级。等级列表来自 DSH；没有可选等级时，可在 DSH 的模型设置中声明支持的推理等级，再刷新。</p>
+      <button type="button" id="refreshModels">刷新 DSH 模型</button>
+      <span class="hint" id="modelStatus"></span>
+      <label>DeepSeek API Key（可选）
+        <input name="apiKey" type="password" autocomplete="new-password">
+        <span class="hint">没有配置 DSH 模型时，可用 DeepSeek API Key。聊天模型选择「使用默认模型」即可使用此 Key。</span>
       </label>
       <h3>👤 谁能找它聊天</h3>
       <label>主人 QQ 号 <em>必填</em>
@@ -306,17 +318,18 @@
         <label>允许私聊的其他 QQ<input name="allowUsers" placeholder="可留空"></label>
       </div>
       <h3>📱 机器人 QQ</h3>
-      <label>机器人 QQ 号
+      <label data-windows-qq>机器人 QQ 号
         <input name="botQQ" placeholder="填了以后自动登录">
         <span class="hint">建议用小号。第一次要扫码，之后自动登录；登录失效时会弹出扫码窗口。</span>
       </label>
-      <label class="check"><input name="autoStart" type="checkbox"> 打开大肥鱼时自动登录 QQ 并上线</label>
-      <details class="explain">
+      <label class="check"><input name="autoStart" type="checkbox"> 打开控制台时自动启动大肥鱼</label>
+      <details class="explain" id="onebotSettings">
         <summary>高级：使用自己的 OneBot（不用内置 QQ）</summary>
-        <label class="check"><input name="useBuiltinNapcat" type="checkbox"> 使用内置 QQ（NapCat）</label>
+        <label class="check" data-windows-qq><input name="useBuiltinNapcat" type="checkbox"> 使用内置 QQ（NapCat）</label>
         <div class="grid2">
-          <label>NapCat WebSocket 端口<input name="onebotPort" type="number"></label>
+          <label data-windows-qq>NapCat WebSocket 端口<input name="onebotPort" type="number"></label>
           <label>外部 OneBot v11 地址<input name="onebotUrl" placeholder="ws://127.0.0.1:3001"></label>
+          <label>外部 OneBot Token<input name="onebotToken" type="password" autocomplete="new-password" placeholder="未设置可留空"></label>
         </div>
       </details>
       <div class="bar"><button type="submit">保存</button><span class="hint save-hint"></span></div>
