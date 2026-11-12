@@ -1,6 +1,6 @@
 # 🐟 养大肥鱼
 
-让 DeepSeek 住进你的 QQ：一条有人格、有记忆、会斗图、会自己冒泡的 AI 群友。
+大肥鱼是 QQ 里有自己人格和记忆的 AI 群友，会斗图、会自己冒泡。聊天模型可以在 DSH 中配置。
 
 基于 [DeepSeek Harness（DSH）](https://www.npmjs.com/package/@deepseek-ai/dsh) 和 [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot v11）。Windows 使用安装包，macOS 可从源码运行。两个平台共用本机网页控制台、人格卡和长期记忆。
 
@@ -18,32 +18,40 @@
 
 ## 快速开始
 
-### Windows：从源码打包
+### 获取源码
 
-需要 Windows 10/11、[PowerShell 7](https://github.com/PowerShell/PowerShell)、[Node.js](https://nodejs.org/) 22.19+ 或 24+。
+双平台版本目前在 `refactor/macos` 分支。从终端执行以下命令，之后的安装命令都在进入的仓库根目录运行。
+
+```sh
+git clone --branch refactor/macos https://github.com/bryanxianyu/dafeiyu-qq-bot.git
+cd dafeiyu-qq-bot
+```
+
+### Windows 从源码打包
+
+需要 Windows 10/11 x64、[PowerShell 7](https://github.com/PowerShell/PowerShell) 和 x64 版 [Node.js](https://nodejs.org/)（22.x 至少 22.19，或 24 及以上）。确认终端能找到 `pwsh`、`node` 和 `npm`。打包会联网下载依赖，并调用 Windows 自带的 .NET Framework 64 位 C# 编译器。
 
 ```powershell
 pwsh ./windows/pack.ps1
 ```
 
-会自动下载 DSH 和 NapCat 一键包，生成 `dist\大肥鱼-Setup-vX.exe`（安装程序）和便携版 zip。双击安装程序，装好后：
+脚本会自动下载 DSH 和 NapCat 一键包，在仓库的 `dist\` 中生成 `大肥鱼-Setup-vX.exe` 和 `dafeiyu-vX-portable.zip`，其中 `vX` 为实际版本号。双击生成的安装程序并启动「大肥鱼」。安装包已包含 Node.js 和 DSH 运行时。
 
-1. 浏览器会打开控制台，在「账号与连接」填写主人 QQ 号、允许它说话的群号和机器人 QQ 号。从同步过来的 DSH 模型中选择聊天模型，或填写 DeepSeek API Key 并保留「使用默认模型」。
-2. 首次启动会下载 QQ 组件（约 200MB），然后弹出扫码窗口：用**机器人 QQ（建议小号）**的手机 QQ 扫码。
-3. 首页显示「大肥鱼在线」就可以在群里 @ 它了。
+1. 在浏览器控制台打开「账号与连接」，填写主人 QQ 号。要在群里使用，再填写允许说话的群号。机器人 QQ 号可留空，填写后可用于下次自动登录。
+2. 若已在同一台电脑的 DSH 桌面版配置模型，从「QQ 聊天」下拉框选择同步过来的模型。若没有配置 DSH 桌面版，可以填写 [DeepSeek API Key](https://platform.deepseek.com/api_keys)，并保留「使用默认模型」。保存配置。
+3. 内置 NapCat 首次启动会联网下载 QQ 组件。用登录了机器人账号的手机 QQ 扫描控制台首页或托盘弹窗里的二维码。首页显示「大肥鱼在线」后，可以用主人 QQ 私聊机器人发送 `/状态`。
 
 Windows 和 macOS 都会同步 DSH 桌面版的模型路由。Windows 安装目录下的 fish profile 配置位于 `home/profiles/fish/cordis.patch.yml`，也可在其中手动配置模型。聊天、记忆整理和表情看图可以分别选择模型和思考等级。参考 [fish profile 配置示例](macos/README.md#在-dsh-配置模型)。
 
-### macOS：从源码运行
+### macOS 从源码运行
 
-在仓库根目录运行以下命令。控制台默认打开 `http://127.0.0.1:5140/`，在「账号与连接」选择已在 DSH 配置的模型，填写主人 QQ 号和正向 OneBot v11 地址。
+需要 [Node.js](https://nodejs.org/)（22.x 至少 22.19，或 24 及以上）。在仓库根目录运行以下命令。
 
 ```sh
-npm ci --prefix macos
-node macos/start.mjs
+npm ci --prefix macos && node macos/start.mjs
 ```
 
-可以使用已有的 OneBot 服务，也可以用 [macOS 部署指南](macos/README.md)里的 NapCat 容器。指南包含登录、Token 和本机数据的位置。
+打开 [大肥鱼控制台](http://127.0.0.1:5140/)，在「账号与连接」选择 DSH 模型，或填写 DeepSeek API Key 并保留「使用默认模型」。填入主人 QQ 号和正向 OneBot v11 WebSocket 的地址及 Token，再保存。已有 OneBot 服务可直接使用。需要部署 NapCat 时，按 [macOS 部署指南](macos/README.md#用容器运行-napcat)启动容器、登录 QQ 并配置连接。
 
 运行数据默认保存在仓库内的 `macos/data/runtime/`。如需使用其他位置，可在启动时设置 `FISH_RUNTIME_DIR`。
 

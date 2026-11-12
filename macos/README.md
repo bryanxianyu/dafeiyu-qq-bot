@@ -1,13 +1,14 @@
 # 在 macOS 运行大肥鱼
 
-在仓库根目录操作。需要 Node.js 22.19+（22.x）或 24+。QQ 聊天需要在 DSH 的 `fish` profile 中配置可用模型，以及能访问的正向 OneBot v11 WebSocket。
+先按 [根目录 README 的步骤](../README.md#获取源码)获取双平台分支，然后在仓库根目录操作。需要 Node.js（22.x 至少 22.19，或 24 及以上）和 npm。依赖安装到 `macos/node_modules/`。
 
 ```sh
-npm ci --prefix macos
-node macos/start.mjs
+npm ci --prefix macos && node macos/start.mjs
 ```
 
-打开终端输出的控制台地址，在「账号与连接」选择聊天模型，并填写主人 QQ 号、允许使用的群和外部 OneBot 地址。如果服务启用了 WebSocket Token，在同一页填写。Token 留空会保留此前的配置。按 Ctrl+C 可退出控制台和它启动的 DSH。
+后续从仓库根目录运行 `node macos/start.mjs` 即可启动。打开终端输出的控制台地址，在「账号与连接」选择同步过来的 DSH 聊天模型，或填写 DeepSeek API Key 并保留「使用默认模型」。填写主人 QQ 号。要在群里使用，再填写允许说话的群号。
+
+QQ 聊天需要一个已登录机器人账号的正向 OneBot v11 WebSocket 服务。可用已有服务，或按下方步骤部署 NapCat。将地址和服务设置的 WebSocket Token 填入「外部 OneBot v11 地址」和「外部 OneBot Token」，保存配置。Token 留空会保留此前的配置。按 Ctrl+C 可退出控制台和它启动的 DSH。
 
 人格卡、记忆、表情、配置及 DSH 会话默认保存在仓库里的 `macos/data/runtime/`。这个目录已被 Git 忽略。需要自定义路径时，在启动命令前设置 `FISH_RUNTIME_DIR`，例如：
 
@@ -51,13 +52,27 @@ FISH_RUNTIME_DIR="$HOME/FishData" node macos/start.mjs
 
 ## 用容器运行 NapCat
 
-已有 OneBot 服务可跳过本节。Compose 示例需要已运行的 Docker 和 Compose。NapCat 官方镜像提供 Linux arm64 和 amd64 版本，端口在这个示例里只映射到本机回环地址。[NapCat-Docker 官方说明](https://github.com/NapNeko/NapCat-Docker)
+已有 OneBot 服务可跳过本节。先启动 Docker Desktop，在终端运行 `docker compose version` 确认 Compose 可用。若终端找不到 `docker`，而 Docker Desktop 安装在默认位置，可在当前终端运行 `export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"`。下方命令都从仓库根目录执行。NapCat 镜像支持 Linux arm64 和 amd64，示例中的宿主机端口只绑定回环地址。[NapCat-Docker 官方说明](https://github.com/NapNeko/NapCat-Docker/blob/main/README.md)
 
-1. 首次部署时，在 `macos/.env` 写入 `NAPCAT_WEBUI_TOKEN=你的随机长口令`。可用 `openssl rand -hex 24` 生成口令。`macos/.env` 已加入 Git 忽略规则。
-2. 运行 `docker compose --env-file macos/.env -f macos/compose.yaml up -d`。打开 [NapCat WebUI](http://127.0.0.1:6099/webui)，使用上面的口令进入，按界面提示用机器人 QQ 扫码。
-3. 在 NapCat 网络配置里确认已启用 OneBot v11 正向 WebSocket，容器内监听 `0.0.0.0:3001`，消息格式选数组，设置独立的 WebSocket Token。WebUI 口令和 WebSocket Token 分别用于登录管理界面和连接机器人。
-4. 回到大肥鱼控制台，填 `ws://127.0.0.1:3001` 和上一步设置的 WebSocket Token。保存后，首页显示「在线」即可测试 QQ 中的 `/状态`。
+首次部署时运行以下命令生成本机的 `macos/.env`。该文件已被 Git 忽略。已有文件时会沿用。
+
+```sh
+if [ ! -e macos/.env ]; then
+  token="$(openssl rand -hex 24)" &&
+    (umask 077; set -C; printf 'NAPCAT_WEBUI_TOKEN=%s\n' "$token" > macos/.env)
+fi
+docker compose --env-file macos/.env -f macos/compose.yaml up -d
+```
+
+如果 Docker Hub 无法拉取，使用同一个 `macos/.env` 和仓库锁定版本的 [NapCat GHCR 镜像](https://github.com/NapNeko/NapCatLinuxNodeLoader/pkgs/container/nodenapcat)。
+
+```sh
+docker compose --env-file macos/.env -f macos/compose.yaml -f macos/compose.ghcr.yaml up -d
+```
+
+1. 打开 [NapCat WebUI](http://127.0.0.1:6099/webui)。Docker Hub 镜像首次启动时用 `macos/.env` 里的 `NAPCAT_WEBUI_TOKEN` 初始化登录口令。使用 GHCR 镜像或已有 NapCat 配置时，以 `macos/data/config/webui.json` 中的 `token` 为准。容器初始化后可在本机用 `node -p "JSON.parse(require('fs').readFileSync('macos/data/config/webui.json','utf8')).token"` 查看。
+2. 按 WebUI 提示，用登录了机器人账号的手机 QQ 扫码。
+3. 在 NapCat 的网络配置中启用 OneBot v11 正向 WebSocket 服务器。若已有服务器，编辑它即可。容器内监听 `0.0.0.0:3001`，消息格式选择「数组」，为 WebSocket 设置独立的 Token。
+4. 回到大肥鱼控制台，填 `ws://127.0.0.1:3001` 和上一步设置的 WebSocket Token。保存后，首页显示「大肥鱼在线」时，可用主人 QQ 私聊机器人发送 `/状态`。
 
 查看日志时，把启动命令末尾的 `up -d` 换成 `logs -f napcat`。停止容器时换成 `down`。容器的 QQ 登录数据和 NapCat 配置保存在 `macos/data/`。确定可用镜像版本后，可以在 `macos/.env` 设置 `NAPCAT_TAG` 固定版本。
-
-如果 Docker Hub 无法拉取，可叠加 `-f macos/compose.ghcr.yaml` 使用固定版本的 NapCat 官方 GHCR 镜像。例如：`docker compose --env-file macos/.env -f macos/compose.yaml -f macos/compose.ghcr.yaml up -d`。该镜像的 WebUI 令牌由自身生成，保存在 `macos/data/config/webui.json`；可以在项目根目录用 `node -p "JSON.parse(require('fs').readFileSync('macos/data/config/webui.json','utf8')).token"` 查看。首次使用时，在 WebUI 的网络配置中新建启用的 WebSocket 服务器，监听容器内 `0.0.0.0:3001`，设置 Token；宿主机端口仍只绑定 `127.0.0.1`。
